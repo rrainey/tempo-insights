@@ -338,8 +338,8 @@ print_step "Configuring Supavisor Pooler Ports"
 
 echo "Supavisor uses environment variables for port mapping"
 echo "Current configuration:"
-echo "  POSTGRES_PORT=$(grep "^POSTGRES_PORT=" supabase-stack/.env | cut -d'=' -f2)"
-echo "  POOLER_PROXY_PORT_TRANSACTION=$(grep "^POOLER_PROXY_PORT_TRANSACTION=" supabase-stack/.env | cut -d'=' -f2)"
+echo "  POSTGRES_PORT=$(grep "^POSTGRES_PORT=" supabase-stack/.env | sed 's/^POSTGRES_PORT=//')"
+echo "  POOLER_PROXY_PORT_TRANSACTION=$(grep "^POOLER_PROXY_PORT_TRANSACTION=" supabase-stack/.env | sed 's/^POOLER_PROXY_PORT_TRANSACTION=//')"
 
 # The pooler uses ${POSTGRES_PORT}:5432 which would conflict with db's 5432
 # We need to comment out that port mapping in docker-compose.yml
@@ -455,11 +455,11 @@ docker compose -f supabase-stack/docker-compose.yml ps
 # Step 11: Create Local .env File
 print_step "Step 11: Creating Local Environment File"
 
-# Extract secrets from Supabase
-POSTGRES_PASSWORD=$(grep "^POSTGRES_PASSWORD=" supabase-stack/.env | cut -d'=' -f2)
-JWT_SECRET=$(grep "^JWT_SECRET=" supabase-stack/.env | cut -d'=' -f2)
-ANON_KEY=$(grep "^ANON_KEY=" supabase-stack/.env | cut -d'=' -f2)
-SERVICE_ROLE_KEY=$(grep "^SERVICE_ROLE_KEY=" supabase-stack/.env | cut -d'=' -f2)
+# Extract secrets from Supabase using more robust method that handles = in values
+POSTGRES_PASSWORD=$(grep "^POSTGRES_PASSWORD=" supabase-stack/.env | sed 's/^POSTGRES_PASSWORD=//')
+JWT_SECRET=$(grep "^JWT_SECRET=" supabase-stack/.env | sed 's/^JWT_SECRET=//')
+ANON_KEY=$(grep "^ANON_KEY=" supabase-stack/.env | sed 's/^ANON_KEY=//')
+SERVICE_ROLE_KEY=$(grep "^SERVICE_ROLE_KEY=" supabase-stack/.env | sed 's/^SERVICE_ROLE_KEY=//')
 
 if [ -z "$POSTGRES_PASSWORD" ] || [ -z "$JWT_SECRET" ]; then
     print_error "Could not read secrets from supabase-stack/.env"
