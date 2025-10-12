@@ -242,7 +242,7 @@ SUPABASE_STACK_DIR="$INSTALL_DIR/supabase-stack"
 if [ ! -d "$SUPABASE_STACK_DIR" ]; then
     echo "Downloading Supabase Docker configuration..."
     su - $ACTUAL_USER -c "cd $INSTALL_DIR && git clone --depth 1 https://github.com/supabase/supabase supabase-temp"
-    su - $ACTUAL_USER -c "cd $INSTALL_DIR && mkdir -p supabase-stack && cp -r supabase-temp/docker/* supabase-stack/"
+    su - $ACTUAL_USER -c "cd $INSTALL_DIR && mkdir -p supabase-stack && cp -r supabase-temp/docker/* supabase-temp/docker/.env.example supabase-stack/"
     su - $ACTUAL_USER -c "cd $INSTALL_DIR && rm -rf supabase-temp"
     echo "✓ Supabase configuration downloaded"
 fi
