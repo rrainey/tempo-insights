@@ -334,35 +334,41 @@ else
 fi
 
 # Handle pooler port conflict
-print_step "Checking Supavisor Pooler Port Configuration"
+print_step "Configuring Supavisor Pooler Ports"
 
-# More robust check for pooler having port 5432
-if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml 2>/dev/null | grep -q '5432:5432'; then
-    print_warning "Supavisor exposing port 5432 (will cause conflict with db)"
-    echo "Removing port 5432 from pooler (keeping only 6543)..."
+echo "Supavisor uses environment variables for port mapping"
+echo "Current configuration:"
+echo "  POSTGRES_PORT=$(grep "^POSTGRES_PORT=" supabase-stack/.env | cut -d'=' -f2)"
+echo "  POOLER_PROXY_PORT_TRANSACTION=$(grep "^POOLER_PROXY_PORT_TRANSACTION=" supabase-stack/.env | cut -d'=' -f2)"
+
+# The pooler uses ${POSTGRES_PORT}:5432 which would conflict with db's 5432
+# We need to comment out that port mapping in docker-compose.yml
+if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q 'POSTGRES_PORT.*:5432'; then
+    print_warning "Supavisor configured to expose PostgreSQL port via \${POSTGRES_PORT}:5432"
+    echo "This will conflict with db service on port 5432"
+    echo "Disabling pooler's PostgreSQL port (keeping only transaction pooler on 6543)..."
     
-    # Create a temporary file for processing
-    awk '
-        /^  supavisor:/ { in_supavisor=1 }
-        in_supavisor && /^  [a-z]/ && !/^  supavisor:/ { in_supavisor=0 }
-        in_supavisor && /5432:5432/ { next }
-        { print }
-    ' supabase-stack/docker-compose.yml > supabase-stack/docker-compose.yml.tmp
+    # Comment out the line with ${POSTGRES_PORT}:5432
+    sed -i 's|^\(      - \${POSTGRES_PORT}:5432\)|      # \1  # Disabled - using direct db connection|' supabase-stack/docker-compose.yml
     
-    mv supabase-stack/docker-compose.yml.tmp supabase-stack/docker-compose.yml
     chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
     
-    print_success "Removed port 5432 from pooler"
+    print_success "Disabled pooler's PostgreSQL port"
     
-    # Verify it was removed
-    if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q '5432:5432'; then
-        print_error "Failed to remove port 5432 from pooler"
-        echo "Please manually edit supabase-stack/docker-compose.yml"
-        echo "Remove the line: - \"5432:5432\" from the supavisor service"
+    # Verify
+    if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -v "^[[:space:]]*#" | grep -q 'POSTGRES_PORT.*:5432'; then
+        print_error "Failed to disable pooler's PostgreSQL port"
+        echo ""
+        echo "Manual fix required:"
+        echo "Edit supabase-stack/docker-compose.yml"
+        echo "Find line:   - \${POSTGRES_PORT}:5432"
+        echo "Comment it: # - \${POSTGRES_PORT}:5432"
         exit 1
     fi
+    
+    print_success "Verified: pooler's PostgreSQL port is commented out"
 else
-    print_success "Pooler not exposing port 5432 (no conflict)"
+    print_success "Pooler's PostgreSQL port already disabled"
 fi
 
 chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
@@ -379,23 +385,24 @@ else
     exit 1
 fi
 
-# Check supavisor does NOT have 5432
-if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q '5432:5432'; then
-    print_error "✗ supavisor still has port 5432 (conflict!)"
+# Check supavisor PostgreSQL port is commented out
+if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -v "^[[:space:]]*#" | grep -q 'POSTGRES_PORT.*:5432'; then
+    print_error "✗ supavisor still has active PostgreSQL port (conflict!)"
     echo ""
     echo "Manual fix required:"
     echo "Edit supabase-stack/docker-compose.yml"
-    echo "Find the supavisor service and remove: - \"5432:5432\""
+    echo "Find: - \${POSTGRES_PORT}:5432"
+    echo "Change to: # - \${POSTGRES_PORT}:5432"
     exit 1
 else
-    print_success "✓ supavisor not exposing port 5432"
+    print_success "✓ supavisor PostgreSQL port disabled"
 fi
 
-# Check supavisor still has 6543
-if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q '6543:6543'; then
-    print_success "✓ supavisor will expose port 6543"
+# Check supavisor still has transaction pooler port
+if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -v "^[[:space:]]*#" | grep -q 'POOLER_PROXY_PORT_TRANSACTION.*:6543'; then
+    print_success "✓ supavisor transaction pooler (6543) enabled"
 else
-    print_warning "⚠ supavisor missing port 6543"
+    print_warning "⚠ supavisor transaction pooler port might be disabled"
 fi
 
 # Step 10: Start Supabase Stack
