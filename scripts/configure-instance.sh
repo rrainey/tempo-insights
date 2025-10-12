@@ -141,14 +141,25 @@ else
     print_success "pnpm installed"
 fi
 
-# Step 6: Install BlueZ
-print_step "Step 6: Installing BlueZ (Bluetooth)"
+# Step 6: Install System Utilities
+print_step "Step 6: Installing System Utilities"
 
-apt-get install -y bluez libbluetooth-dev bluetooth
+# Install required tools
+apt-get install -y \
+    bluez \
+    libbluetooth-dev \
+    bluetooth \
+    jq \
+    curl \
+    postgresql-client
+
+print_success "System utilities installed"
+
+# Start Bluetooth
 systemctl enable bluetooth
 systemctl start bluetooth
 
-print_success "BlueZ installed and started"
+print_success "BlueZ started"
 
 # Verify Bluetooth
 if hciconfig hci0 &> /dev/null; then
@@ -241,7 +252,11 @@ if [ ! -f "supabase-stack/.env" ]; then
     sed -i "s|your-super-secret-jwt-token-with-at-least-32-characters-long|$JWT_SECRET|g" supabase-stack/.env
     sed -i "s|this_password_is_insecure_and_should_be_updated|$DASHBOARD_PASSWORD|g" supabase-stack/.env
     
+    # Ensure we're using PostgreSQL 15 (not 16)
+    sed -i 's/^POSTGRES_VERSION=.*/POSTGRES_VERSION=15.8.1.085/' supabase-stack/.env
+    
     print_success "Secrets generated and configured"
+    print_success "PostgreSQL version set to 15.8.1.085"
     
     # Save secrets to file for reference
     SECRETS_FILE=".secrets.$ENVIRONMENT"
@@ -283,6 +298,34 @@ else
     print_warning "supabase-stack/.env already exists"
 fi
 
+# Ensure PostgreSQL port is exposed in docker-compose.yml
+print_step "Configuring PostgreSQL Port Exposure"
+
+if grep -q "^  db:" supabase-stack/docker-compose.yml; then
+    # Check if ports are already exposed
+    if ! grep -A 20 "^  db:" supabase-stack/docker-compose.yml | grep -q "5432:5432"; then
+        print_success "Adding port 5432 exposure to PostgreSQL service..."
+        
+        # Backup the file
+        cp supabase-stack/docker-compose.yml supabase-stack/docker-compose.yml.backup
+        
+        # Add ports section before healthcheck
+        # This uses a more reliable sed approach
+        awk '/^  db:/ {print; in_db=1; next} 
+             in_db && /healthcheck:/ {print "    ports:"; print "      - \"5432:5432\""; in_db=0} 
+             {print}' supabase-stack/docker-compose.yml.backup > supabase-stack/docker-compose.yml
+        
+        chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
+        
+        print_success "PostgreSQL port 5432 now exposed to host"
+    else
+        print_success "PostgreSQL port already exposed"
+    fi
+else
+    print_warning "Could not find 'db:' service in docker-compose.yml"
+    echo "You may need to manually add port exposure for PostgreSQL"
+fi
+
 # Step 10: Start Supabase Stack
 print_step "Step 10: Starting Supabase Stack"
 
@@ -300,18 +343,32 @@ echo "Waiting for services to start (this may take 60-90 seconds)..."
 
 MAX_WAIT=90
 ELAPSED=0
+SERVICES_READY=false
+
 while [ $ELAPSED -lt $MAX_WAIT ]; do
-    HEALTHY_COUNT=$(docker compose -f supabase-stack/docker-compose.yml ps --format json | jq -r '.[].Health' | grep -c "healthy" || echo "0")
+    # Count healthy services using docker compose ps with proper format
+    HEALTHY_COUNT=$(cd supabase-stack && docker compose ps --format json 2>/dev/null | \
+        jq -r 'if type == "array" then .[] else . end | select(.Health == "healthy") | .Name' | \
+        wc -l || echo "0")
+    
+    # Total services should be 14
+    TOTAL_SERVICES=14
     
     if [ "$HEALTHY_COUNT" -ge 10 ]; then
-        print_success "Services are healthy!"
+        print_success "Services are starting up! ($HEALTHY_COUNT/$TOTAL_SERVICES healthy)"
+        SERVICES_READY=true
         break
     fi
     
-    echo "  Healthy services: $HEALTHY_COUNT/14 (waiting...)"
+    echo "  Healthy services: $HEALTHY_COUNT/$TOTAL_SERVICES (waiting...)"
     sleep 10
     ELAPSED=$((ELAPSED + 10))
 done
+
+if [ "$SERVICES_READY" = false ]; then
+    print_warning "Not all services are healthy yet, but continuing..."
+    echo "You can check service status with: cd supabase-stack && docker compose ps"
+fi
 
 # Show service status
 docker compose -f supabase-stack/docker-compose.yml ps
@@ -345,9 +402,9 @@ cat > .env << EOF
 # ===================================
 # Database Connection
 # ===================================
-# Using Supavisor connection pooler (port 6543)
-# This is the recommended connection method
-DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@localhost:6543/postgres?pgbouncer=true"
+# Using direct PostgreSQL connection (port 5432)
+# Note: Supavisor pooler requires additional tenant configuration
+DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@localhost:5432/postgres"
 
 # ===================================
 # Security & Authentication
@@ -394,20 +451,20 @@ print_success "Created .env file for local tooling"
 # Step 12: Verify Database Connectivity
 print_step "Step 12: Verifying Database Connectivity"
 
-echo "Testing connection to Supavisor pooler (port 6543)..."
+echo "Testing connection to PostgreSQL (port 5432)..."
 
-# Wait for pooler to be ready
+# Wait for database to be ready
 RETRIES=12
 RETRY_COUNT=0
 CONNECTED=false
 
 while [ $RETRY_COUNT -lt $RETRIES ]; do
     if docker run --rm --network host postgres:15 psql \
-        "postgresql://postgres:${POSTGRES_PASSWORD}@localhost:6543/postgres?pgbouncer=true" \
+        "postgresql://postgres:${POSTGRES_PASSWORD}@localhost:5432/postgres" \
         -c "SELECT version();" &> /dev/null; then
         
         CONNECTED=true
-        print_success "Connected to database via Supavisor pooler (port 6543)"
+        print_success "Connected to PostgreSQL database (port 5432)"
         break
     fi
     
@@ -420,9 +477,20 @@ if [ "$CONNECTED" = false ]; then
     print_error "Could not connect to database"
     echo ""
     echo "Troubleshooting:"
-    echo "1. Check Supabase services: cd supabase-stack && docker compose ps"
-    echo "2. Check pooler logs: cd supabase-stack && docker compose logs supavisor"
-    echo "3. Verify port 6543 is open: sudo lsof -i :6543"
+    echo "1. Check if PostgreSQL port is exposed:"
+    echo "   cd supabase-stack && docker compose ps | grep db"
+    echo "2. Check database logs:"
+    echo "   cd supabase-stack && docker compose logs db"
+    echo "3. Verify port 5432 is accessible:"
+    echo "   sudo lsof -i :5432"
+    echo ""
+    echo "The database might not have port 5432 exposed to the host."
+    echo "You may need to add this to supabase-stack/docker-compose.yml:"
+    echo ""
+    echo "  db:"
+    echo "    ports:"
+    echo "      - \"5432:5432\""
+    echo ""
     exit 1
 fi
 
@@ -454,8 +522,8 @@ cat > .env.docker << EOF
 # ===================================
 # Database Connection
 # ===================================
-# Internal Docker network - connects to 'db' service name
-DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@supabase-pooler:6543/postgres?pgbouncer=true"
+# Internal Docker network - connects via service name
+DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres"
 
 # ===================================
 # Security & Authentication
