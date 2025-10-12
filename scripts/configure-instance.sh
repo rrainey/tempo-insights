@@ -113,6 +113,25 @@ if ! command -v docker &> /dev/null; then
     
     # Add user to docker group
     usermod -aG docker $ACTUAL_USER
+
+    # After Docker installation in configure-instance.sh:
+    sudo usermod -aG docker $USER
+
+    echo ""
+    echo "⚠️  Docker group membership updated!"
+    echo "You need to log out and log back in (or reboot) for this to take effect."
+    echo ""
+    read -p "Would you like to continue with sudo for this session? (y/n) " -n 1 -r
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Use sudo for remaining docker commands
+        DOCKER_CMD="sudo docker"
+        DOCKER_COMPOSE_CMD="sudo docker compose"
+    else
+        echo "Please log out and run this script again."
+        exit 0
+    fi
     
     echo "✓ Docker installed"
 else
