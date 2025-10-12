@@ -47,7 +47,7 @@ next-env.d.ts
 .env.development.local
 
 # Prisma
-prisma/migrations/
+prisma/
 *.db
 *.db-journal
 
