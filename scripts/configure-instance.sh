@@ -301,45 +301,71 @@ fi
 # Ensure PostgreSQL port is exposed in docker-compose.yml
 print_step "Configuring PostgreSQL Port Exposure"
 
+# Backup the file first
+cp supabase-stack/docker-compose.yml supabase-stack/docker-compose.yml.backup
+
+# Check current db service configuration
 if grep -q "^  db:" supabase-stack/docker-compose.yml; then
-    # Check if ports are already exposed on db service
-    if ! grep -A 20 "^  db:" supabase-stack/docker-compose.yml | grep -q "ports:" | head -1; then
-        print_success "Adding port 5432 exposure to PostgreSQL service..."
-        
-        # Backup the file
-        cp supabase-stack/docker-compose.yml supabase-stack/docker-compose.yml.backup
-        
-        # Add ports section before healthcheck on db service
-        awk '/^  db:/ {print; in_db=1; next} 
-             in_db && /healthcheck:/ {print "    ports:"; print "      - \"5432:5432\""; in_db=0} 
-             {print}' supabase-stack/docker-compose.yml.backup > supabase-stack/docker-compose.yml
-        
-        chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
-        
-        print_success "PostgreSQL port 5432 now exposed to host"
+    # Check if db service already has ports section
+    DB_HAS_PORTS=$(awk '/^  db:/,/^  [a-z]/ {if (/^    ports:/) print "yes"}' supabase-stack/docker-compose.yml)
+    
+    if [ "$DB_HAS_PORTS" = "yes" ]; then
+        # Has ports section, check if 5432 is there
+        if grep -A 20 "^  db:" supabase-stack/docker-compose.yml | grep -q '"5432:5432"'; then
+            print_success "PostgreSQL port 5432 already exposed"
+        else
+            # Add 5432 to existing ports section
+            sed -i '/^  db:/,/^  [a-z]/ {
+                /^    ports:/a\      - "5432:5432"
+            }' supabase-stack/docker-compose.yml
+            print_success "Added port 5432 to existing ports section"
+        fi
     else
-        print_success "PostgreSQL port already exposed"
+        # No ports section, need to add it
+        # Insert ports section right after the image line
+        sed -i '/^  db:/,/^  [a-z]/ {
+            /image: supabase\/postgres/a\    ports:\n      - "5432:5432"
+        }' supabase-stack/docker-compose.yml
+        print_success "Added ports section with 5432 to db service"
     fi
 else
-    print_warning "Could not find 'db:' service in docker-compose.yml"
-    echo "You may need to manually add port exposure for PostgreSQL"
+    print_error "Could not find 'db:' service in docker-compose.yml"
+    exit 1
 fi
 
-# Remove or comment out pooler port 5432 to avoid conflict
+# Handle pooler port conflict
 print_step "Checking Supavisor Pooler Port Configuration"
 
-if grep -A 10 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q "5432:5432"; then
-    print_warning "Supavisor is currently exposing port 5432 (conflicts with db service)"
-    echo "Updating pooler to only expose port 6543..."
+POOLER_HAS_5432=$(grep -A 10 "^  supavisor:" supabase-stack/docker-compose.yml | grep -c '"5432:5432"' || echo "0")
+
+if [ "$POOLER_HAS_5432" -gt 0 ]; then
+    print_warning "Supavisor exposing port 5432 (will cause conflict)"
+    echo "Removing port 5432 from pooler (keeping only 6543)..."
     
-    # Replace pooler ports to only expose 6543
+    # Remove the 5432 line from pooler ports
     sed -i '/^  supavisor:/,/^  [a-z]/ {
-        s/- "5432:5432"/# - "5432:5432" # Disabled - using direct db connection/
+        /- "5432:5432"/d
     }' supabase-stack/docker-compose.yml
     
-    print_success "Pooler port 5432 disabled (using direct db connection on 5432)"
+    print_success "Removed port 5432 from pooler"
 else
-    print_success "Pooler port 5432 not exposed (no conflict)"
+    print_success "Pooler not exposing port 5432 (no conflict)"
+fi
+
+chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
+
+# Verify the changes
+echo ""
+echo "Verifying docker-compose.yml changes..."
+if grep -A 10 "^  db:" supabase-stack/docker-compose.yml | grep -q "5432:5432"; then
+    print_success "Confirmed: db service will expose port 5432"
+else
+    print_error "Failed to add port 5432 to db service"
+    echo "Please manually edit supabase-stack/docker-compose.yml"
+    echo "Add this under the db service:"
+    echo "  ports:"
+    echo "    - \"5432:5432\""
+    exit 1
 fi
 
 # Step 10: Start Supabase Stack
