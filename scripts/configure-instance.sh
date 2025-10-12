@@ -302,15 +302,14 @@ fi
 print_step "Configuring PostgreSQL Port Exposure"
 
 if grep -q "^  db:" supabase-stack/docker-compose.yml; then
-    # Check if ports are already exposed
-    if ! grep -A 20 "^  db:" supabase-stack/docker-compose.yml | grep -q "5432:5432"; then
+    # Check if ports are already exposed on db service
+    if ! grep -A 20 "^  db:" supabase-stack/docker-compose.yml | grep -q "ports:" | head -1; then
         print_success "Adding port 5432 exposure to PostgreSQL service..."
         
         # Backup the file
         cp supabase-stack/docker-compose.yml supabase-stack/docker-compose.yml.backup
         
-        # Add ports section before healthcheck
-        # This uses a more reliable sed approach
+        # Add ports section before healthcheck on db service
         awk '/^  db:/ {print; in_db=1; next} 
              in_db && /healthcheck:/ {print "    ports:"; print "      - \"5432:5432\""; in_db=0} 
              {print}' supabase-stack/docker-compose.yml.backup > supabase-stack/docker-compose.yml
@@ -324,6 +323,23 @@ if grep -q "^  db:" supabase-stack/docker-compose.yml; then
 else
     print_warning "Could not find 'db:' service in docker-compose.yml"
     echo "You may need to manually add port exposure for PostgreSQL"
+fi
+
+# Remove or comment out pooler port 5432 to avoid conflict
+print_step "Checking Supavisor Pooler Port Configuration"
+
+if grep -A 10 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q "5432:5432"; then
+    print_warning "Supavisor is currently exposing port 5432 (conflicts with db service)"
+    echo "Updating pooler to only expose port 6543..."
+    
+    # Replace pooler ports to only expose 6543
+    sed -i '/^  supavisor:/,/^  [a-z]/ {
+        s/- "5432:5432"/# - "5432:5432" # Disabled - using direct db connection/
+    }' supabase-stack/docker-compose.yml
+    
+    print_success "Pooler port 5432 disabled (using direct db connection on 5432)"
+else
+    print_success "Pooler port 5432 not exposed (no conflict)"
 fi
 
 # Step 10: Start Supabase Stack
