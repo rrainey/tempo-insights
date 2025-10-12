@@ -336,36 +336,66 @@ fi
 # Handle pooler port conflict
 print_step "Checking Supavisor Pooler Port Configuration"
 
-POOLER_HAS_5432=$(grep -A 10 "^  supavisor:" supabase-stack/docker-compose.yml | grep -c '"5432:5432"' || echo "0")
-
-if [ "$POOLER_HAS_5432" -gt 0 ]; then
-    print_warning "Supavisor exposing port 5432 (will cause conflict)"
+# More robust check for pooler having port 5432
+if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml 2>/dev/null | grep -q '5432:5432'; then
+    print_warning "Supavisor exposing port 5432 (will cause conflict with db)"
     echo "Removing port 5432 from pooler (keeping only 6543)..."
     
-    # Remove the 5432 line from pooler ports
-    sed -i '/^  supavisor:/,/^  [a-z]/ {
-        /- "5432:5432"/d
-    }' supabase-stack/docker-compose.yml
+    # Create a temporary file for processing
+    awk '
+        /^  supavisor:/ { in_supavisor=1 }
+        in_supavisor && /^  [a-z]/ && !/^  supavisor:/ { in_supavisor=0 }
+        in_supavisor && /5432:5432/ { next }
+        { print }
+    ' supabase-stack/docker-compose.yml > supabase-stack/docker-compose.yml.tmp
+    
+    mv supabase-stack/docker-compose.yml.tmp supabase-stack/docker-compose.yml
+    chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
     
     print_success "Removed port 5432 from pooler"
+    
+    # Verify it was removed
+    if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q '5432:5432'; then
+        print_error "Failed to remove port 5432 from pooler"
+        echo "Please manually edit supabase-stack/docker-compose.yml"
+        echo "Remove the line: - \"5432:5432\" from the supavisor service"
+        exit 1
+    fi
 else
     print_success "Pooler not exposing port 5432 (no conflict)"
 fi
 
 chown $ACTUAL_USER:$ACTUAL_USER supabase-stack/docker-compose.yml
 
-# Verify the changes
+# Final verification of both changes
 echo ""
-echo "Verifying docker-compose.yml changes..."
+echo "Verifying docker-compose.yml configuration..."
+
+# Check db has 5432
 if grep -A 10 "^  db:" supabase-stack/docker-compose.yml | grep -q "5432:5432"; then
-    print_success "Confirmed: db service will expose port 5432"
+    print_success "✓ db service will expose port 5432"
 else
-    print_error "Failed to add port 5432 to db service"
-    echo "Please manually edit supabase-stack/docker-compose.yml"
-    echo "Add this under the db service:"
-    echo "  ports:"
-    echo "    - \"5432:5432\""
+    print_error "✗ db service missing port 5432"
     exit 1
+fi
+
+# Check supavisor does NOT have 5432
+if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q '5432:5432'; then
+    print_error "✗ supavisor still has port 5432 (conflict!)"
+    echo ""
+    echo "Manual fix required:"
+    echo "Edit supabase-stack/docker-compose.yml"
+    echo "Find the supavisor service and remove: - \"5432:5432\""
+    exit 1
+else
+    print_success "✓ supavisor not exposing port 5432"
+fi
+
+# Check supavisor still has 6543
+if grep -A 15 "^  supavisor:" supabase-stack/docker-compose.yml | grep -q '6543:6543'; then
+    print_success "✓ supavisor will expose port 6543"
+else
+    print_warning "⚠ supavisor missing port 6543"
 fi
 
 # Step 10: Start Supabase Stack
