@@ -6,7 +6,8 @@
 # - tempo-bt-scanner (Bluetooth scanner worker)
 # - tempo-analysis (Log analysis worker)
 #
-# Supabase stack runs separately in supabase-stack/
+# Supabase stack runs separately in supabase/docker-compose.yml
+# All services connect to Supabase via the supabase_default network
 # 
 # Usage:
 #   docker compose up -d          # Start all services
@@ -19,10 +20,11 @@ version: '3.8'
 # ===================================
 # NETWORKS
 # ===================================
+# Connect to the external Supabase network
 networks:
-  tempo-network:
-    driver: bridge
-    name: tempo-network
+  supabase_default:
+    external: true
+    name: supabase_default
 
 # ===================================
 # SERVICES
@@ -43,9 +45,9 @@ services:
       platforms:
         - linux/arm64
     
-    # Network configuration
+    # Network configuration - connect to Supabase network
     networks:
-      - tempo-network
+      - supabase_default
     
     # Port mapping
     ports:
@@ -58,10 +60,6 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
-    
-    # Dependencies
-    depends_on:
-      - db
     
     # Health check
     healthcheck:
@@ -96,6 +94,7 @@ services:
         - linux/arm64
     
     # Network configuration - MUST use host mode for Bluetooth
+    # This means it connects to Postgres via localhost:5432
     network_mode: host
     
     # Security capabilities for Bluetooth access
@@ -117,16 +116,11 @@ services:
     
     # Environment variables
     env_file:
-      - .env.docker
+      - .env.docker.bt-scanner  # Separate env file for host network mode
     
     environment:
       - NODE_ENV=production
       - SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
-    
-    # Dependencies
-    depends_on:
-      - db
-      - tempo-web
     
     # Restart policy
     restart: unless-stopped
@@ -152,9 +146,9 @@ services:
       platforms:
         - linux/arm64
     
-    # Network configuration
+    # Network configuration - connect to Supabase network
     networks:
-      - tempo-network
+      - supabase_default
     
     # No ports exposed (background worker)
     
@@ -165,11 +159,6 @@ services:
     environment:
       - NODE_ENV=production
     
-    # Dependencies
-    depends_on:
-      - db
-      - tempo-web
-    
     # Restart policy
     restart: unless-stopped
     
@@ -179,27 +168,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-  
-  # -----------------------------------
-  # Database Proxy (Reference to Supabase)
-  # -----------------------------------
-  # This is a reference to the Supabase PostgreSQL instance
-  # The actual database runs in supabase-stack/
-  # Services connect via the tempo-network bridge
-  db:
-    image: postgres:15-alpine
-    container_name: tempo-db-proxy
-    
-    # This is just a placeholder service definition
-    # The real database is in supabase-stack/docker-compose.yml
-    # We use external network connection instead
-    command: echo "Database runs in supabase-stack - this is a placeholder"
-    
-    networks:
-      - tempo-network
-    
-    # Mark as external (managed separately)
-    restart: "no"
 
 # ===================================
 # CONFIGURATION NOTES
@@ -207,23 +175,32 @@ services:
 # 
 # Database Connection:
 # -------------------
-# Services connect to Supabase PostgreSQL at:
-#   - Host: postgres (container name from supabase-stack)
-#   - Port: 5432 (internal Docker network)
-#   - External: localhost:54322 (from host machine)
+# Services connect to Supabase PostgreSQL using different hostnames
+# based on their network mode:
 #
-# To connect both stacks:
-# 1. Start Supabase first: cd supabase-stack && docker compose up -d
-# 2. Connect networks: docker network connect tempo-network kong
-# 3. Start app: docker compose up -d
+#   tempo-web & tempo-analysis (on supabase_default network):
+#     DATABASE_URL=postgresql://postgres:password@supabase-db:5432/postgres
 #
-# Or use configure-instance.sh which handles this automatically.
+#   tempo-bt-scanner (network_mode: host):
+#     DATABASE_URL=postgresql://postgres:password@localhost:5432/postgres
+#
+# Prerequisites:
+# --------------
+# 1. Supabase must be running first:
+#      cd supabase && docker compose up -d
+#
+# 2. Verify supabase_default network exists:
+#      docker network ls | grep supabase_default
+#
+# 3. Then start Tempo services:
+#      docker compose up -d
 #
 # Bluetooth Scanner:
 # ------------------
 # - Runs with network_mode: host for HCI socket access
 # - Requires host BlueZ service running: systemctl start bluetooth
 # - Cannot use standard Docker networking (limitation of Bluetooth)
+# - Uses separate .env.docker.bt-scanner with localhost DATABASE_URL
 #
 # Health & Monitoring:
 # --------------------
@@ -233,6 +210,6 @@ services:
 #
 # Volumes & Persistence:
 # ----------------------
-# - All persistent data in supabase-stack/volumes/
+# - All persistent data in supabase/volumes/
 # - No application volumes needed (workers are stateless)
 # - Logs rotate automatically (10MB max, 3 files)
