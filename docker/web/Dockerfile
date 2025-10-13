@@ -34,7 +34,7 @@ COPY . .
 
 # Copy Prisma schema and generate client
 COPY prisma ./prisma/
-RUN npx prisma generate
+RUN npx prisma generate --generator client
 
 # Build Next.js application with standalone output
 # This creates a minimal production build

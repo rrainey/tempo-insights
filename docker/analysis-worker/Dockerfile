@@ -32,7 +32,7 @@ COPY . .
 
 # Copy Prisma schema and generate client
 COPY prisma ./prisma/
-RUN npx prisma generate
+RUN npx prisma generate --generator client
 
 # Compile TypeScript for analysis worker
 # Only compile log-processor and analysis libraries it needs

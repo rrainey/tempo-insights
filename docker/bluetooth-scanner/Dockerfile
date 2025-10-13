@@ -67,7 +67,7 @@ COPY . .
 
 # Copy Prisma schema and generate client
 COPY prisma ./prisma/
-RUN npx prisma generate
+RUN npx prisma generate --generator client
 
 # Compile TypeScript for workers
 # Only compile bluetooth-scanner and its direct dependency (bluetooth service)
