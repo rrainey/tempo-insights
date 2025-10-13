@@ -46,7 +46,7 @@ export default async function handler(
     // Set cookie
     const cookie = serialize('auth-token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: process.env.USE_SECURE_COOKIES === 'true',
       sameSite: 'lax',
       maxAge: 30 * 24 * 60 * 60, // 30 days
       path: '/',
