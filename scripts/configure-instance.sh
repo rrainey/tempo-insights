@@ -557,6 +557,68 @@ sudo -u $ACTUAL_USER pnpm prisma db seed
 
 print_success "Initial data seeded"
 
+# Step 13b: Create Supabase Storage Bucket
+print_step "Step 13b: Setting Up Supabase Storage Bucket"
+
+echo "Creating jump-logs storage bucket..."
+
+# Extract SERVICE_KEY more reliably
+SERVICE_KEY=$(grep "^SUPABASE_SERVICE_KEY=" supabase/.env | cut -d'=' -f2- | tr -d '"' | tr -d "'")
+
+if [ -z "$SERVICE_KEY" ]; then
+    print_error "Could not extract SUPABASE_SERVICE_KEY from supabase/.env"
+    exit 1
+fi
+
+# Wait for Kong to be ready
+echo "Waiting for Supabase Kong gateway to be ready..."
+MAX_WAIT=30
+ELAPSED=0
+
+while [ $ELAPSED -lt $MAX_WAIT ]; do
+    if curl -s -f "http://localhost:8000/storage/v1/bucket" \
+       -H "Authorization: Bearer $SERVICE_KEY" > /dev/null 2>&1; then
+        print_success "Kong gateway is ready"
+        break
+    fi
+    echo "  Waiting for Kong... ($ELAPSED/$MAX_WAIT seconds)"
+    sleep 5
+    ELAPSED=$((ELAPSED + 5))
+done
+
+if [ $ELAPSED -ge $MAX_WAIT ]; then
+    print_warning "Kong gateway not responding yet, but continuing..."
+    echo "You may need to manually create the storage bucket later."
+    echo "Run: curl -X POST 'http://localhost:8000/storage/v1/bucket' \\"
+    echo "       -H \"Authorization: Bearer \$SERVICE_KEY\" \\"
+    echo "       -H \"Content-Type: application/json\" \\"
+    echo "       -d '{\"id\":\"jump-logs\",\"name\":\"jump-logs\",\"public\":false,\"file_size_limit\":16777216,\"allowed_mime_types\":[\"application/octet-stream\"]}'"
+else
+    # Create the bucket
+    RESPONSE=$(curl -s -X POST 'http://localhost:8000/storage/v1/bucket' \
+      -H "Authorization: Bearer $SERVICE_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "id": "jump-logs",
+        "name": "jump-logs",
+        "public": false,
+        "file_size_limit": 16777216,
+        "allowed_mime_types": ["application/octet-stream"]
+      }')
+
+    if echo "$RESPONSE" | grep -q '"name":"jump-logs"'; then
+        print_success "Created storage bucket: jump-logs (16MB limit)"
+    elif echo "$RESPONSE" | grep -q "already exists"; then
+        print_success "Storage bucket already exists: jump-logs"
+    else
+        print_warning "Could not create storage bucket"
+        echo "Response: $RESPONSE"
+        echo ""
+        echo "You can create it manually later using Supabase Studio"
+        echo "or by running the curl command shown above."
+    fi
+fi
+
 # Step 14: Create .env.docker for Containers
 print_step "Step 14: Creating Docker Environment Configuration"
 
