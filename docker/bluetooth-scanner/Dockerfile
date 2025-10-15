@@ -113,6 +113,12 @@ RUN apt-get update && apt-get install -y \
 # Copy Python virtual environment with smpmgr
 COPY --from=python-builder /opt/venv /opt/venv
 
+# Create user and add to messagebus group
+# messagebus GID is typically 103 on Debian/Ubuntu
+RUN groupadd -g 103 messagebus || true && \
+    groupadd -g 1001 btscanner && \
+    useradd -u 1001 -g btscanner -G messagebus -m -s /bin/bash btscanner
+
 # Copy smpmgr extensions/plugins
 COPY --chown=node:node smpmgr-extensions/plugins /opt/smpmgr-extensions/plugins
 
