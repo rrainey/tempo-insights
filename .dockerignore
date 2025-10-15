@@ -47,7 +47,11 @@ dist/
 Dockerfile
 .dockerignore
 docker-compose*.yml
-docker/
+docker/**
+!docker/bluetooth-scanner/entrypoint.sh
+!docker/bluetooth-scanner/Dockerfile
+!docker/web/Dockerfile
+!docker/analysis-worker/Dockerfile
 
 # ===================================
 # DOCUMENTATION
