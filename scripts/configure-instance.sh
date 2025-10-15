@@ -560,6 +560,13 @@ print_success "Initial data seeded"
 # Step 14: Create .env.docker for Containers
 print_step "Step 14: Creating Docker Environment Configuration"
 
+# Determine secure cookies setting based on environment
+if [ "$ENVIRONMENT" = "production" ]; then
+    USE_SECURE_COOKIES="true"
+else
+    USE_SECURE_COOKIES="false"
+fi
+
 cat > .env.docker << EOF
 # ===================================
 # Tempo Insights - Docker Configuration
@@ -579,6 +586,7 @@ DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgr
 # ===================================
 JWT_SECRET="${JWT_SECRET}"
 WORKER_TOKEN="${WORKER_TOKEN}"
+USE_SECURE_COOKIES="${USE_SECURE_COOKIES}"
 
 # ===================================
 # Supabase Configuration
@@ -590,7 +598,8 @@ SUPABASE_SERVICE_KEY="${SERVICE_ROLE_KEY}"
 # ===================================
 # Application Settings
 # ===================================
-NODE_ENV="${ENVIRONMENT}"
+# This is used for both QA and PRODUCTION Docker setups
+NODE_ENV="production"
 NEXT_PUBLIC_APP_URL="http://localhost:3000"
 
 # ===================================
