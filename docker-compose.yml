@@ -85,29 +85,25 @@ services:
   tempo-bt-scanner:
     image: tempo-bt-scanner:latest
     container_name: tempo-bt-scanner
-
+    
     build:
       context: .
       dockerfile: docker/bluetooth-scanner/Dockerfile
       platforms:
         - linux/arm64
     
-    # Keep these for Bluetooth hardware access
-    userns_mode: host
+    # Minimal Bluetooth configuration
     network_mode: host
     
     cap_add:
       - NET_ADMIN
-      - SYS_ADMIN  # Needed for D-Bus inside container
-    cap_drop:
-      - ALL
-    
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
+      
+    privileged: true
     
     volumes:
-      # Remove D-Bus socket mount - using internal D-Bus now
-      # Keep only plugins
+      # Host D-Bus (read-only is fine!)
+      - /run/dbus:/run/dbus:ro
+      # smpmgr plugins
       - ./smpmgr-extensions/plugins:/opt/smpmgr-extensions/plugins:ro
     
     env_file:
@@ -116,15 +112,9 @@ services:
     environment:
       - NODE_ENV=production
       - SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
-      # No DBUS_SYSTEM_BUS_ADDRESS - using internal D-Bus
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
     
     restart: unless-stopped
-    
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
   
   # -----------------------------------
   # Analysis Worker

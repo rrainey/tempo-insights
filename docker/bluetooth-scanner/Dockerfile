@@ -101,52 +101,25 @@ FROM node:20-bookworm-slim AS runner
 
 WORKDIR /app
 
-# Install runtime Bluetooth libraries AND D-Bus
+# Just install Bluetooth tools - NO D-Bus daemon!
 RUN apt-get update && apt-get install -y \
     bluez \
-    bluetooth \
     libbluetooth3 \
-    libusb-1.0-0 \
-    udev \
     python3 \
-    dbus \
-    gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python virtual environment with smpmgr
+# Copy Python venv with smpmgr
 COPY --from=python-builder /opt/venv /opt/venv
 
-# Create groups and user with proper memberships
-RUN groupadd -g 101 messagebus 2>/dev/null || true && \
-    groupadd -g 1001 btscanner 2>/dev/null || true && \
-    useradd -u 1001 -g btscanner -G messagebus,bluetooth -m -s /bin/bash btscanner
+# Copy application files
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/package.json ./
 
-# Copy smpmgr extensions/plugins
-COPY --chown=btscanner:btscanner smpmgr-extensions/plugins /opt/smpmgr-extensions/plugins
-
-# Copy compiled JavaScript and dependencies
-COPY --from=builder --chown=btscanner:btscanner /app/dist ./dist
-COPY --from=builder --chown=btscanner:btscanner /app/node_modules ./node_modules
-COPY --from=builder --chown=btscanner:btscanner /app/prisma ./prisma
-COPY --from=builder --chown=btscanner:btscanner /app/package.json ./
-
-# Copy entrypoint script
-COPY docker/bluetooth-scanner/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Set PATH to include Python venv
 ENV PATH="/opt/venv/bin:$PATH"
-
-# Set environment for production
 ENV NODE_ENV=production
 ENV SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
 
-# Verify smpmgr installation (as root before switching user)
-RUN smpmgr --version
-
-# DO NOT SET USER - entrypoint needs to run as root, then drops to btscanner
-# Container will start as root, entrypoint starts D-Bus, then switches to btscanner
-
-# Use entrypoint (runs as root to start dbus, then drops to btscanner)
-ENTRYPOINT ["/entrypoint.sh"]
+# Simple: just run the app (no entrypoint complexity!)
 CMD ["node", "dist/workers/bluetooth-scanner.js"]
