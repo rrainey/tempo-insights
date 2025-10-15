@@ -101,22 +101,23 @@ FROM node:20-bookworm-slim AS runner
 
 WORKDIR /app
 
-# Install runtime Bluetooth libraries only (no dev packages)
+# Install runtime Bluetooth libraries AND D-Bus
 RUN apt-get update && apt-get install -y \
     bluez \
+    bluetooth \
     libbluetooth3 \
     libusb-1.0-0 \
     udev \
     python3 \
+    dbus \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python virtual environment with smpmgr
 COPY --from=python-builder /opt/venv /opt/venv
 
 # Create groups and user with proper memberships
-# messagebus GID is typically 103 on Debian/Ubuntu
-# bluetooth group usually already exists in bluez package
-RUN groupadd -g 103 messagebus 2>/dev/null || true && \
+RUN groupadd -g 101 messagebus 2>/dev/null || true && \
     groupadd -g 1001 btscanner 2>/dev/null || true && \
     useradd -u 1001 -g btscanner -G messagebus,bluetooth -m -s /bin/bash btscanner
 
@@ -129,6 +130,10 @@ COPY --from=builder --chown=btscanner:btscanner /app/node_modules ./node_modules
 COPY --from=builder --chown=btscanner:btscanner /app/prisma ./prisma
 COPY --from=builder --chown=btscanner:btscanner /app/package.json ./
 
+# Copy entrypoint script
+COPY docker/bluetooth-scanner/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Set PATH to include Python venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -136,14 +141,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV NODE_ENV=production
 ENV SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
 
-# Switch to non-root user
-USER btscanner
-
-# Verify smpmgr installation
+# Verify smpmgr installation (as root before switching user)
 RUN smpmgr --version
 
-# Health logging - the worker itself logs heartbeats
-# No port exposure needed (background service)
-
-# Start the bluetooth scanner worker
+# Use entrypoint (runs as root to start dbus, then drops to btscanner)
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "dist/workers/bluetooth-scanner.js"]
