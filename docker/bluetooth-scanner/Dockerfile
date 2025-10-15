@@ -144,6 +144,9 @@ ENV SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
 # Verify smpmgr installation (as root before switching user)
 RUN smpmgr --version
 
+# DO NOT SET USER - entrypoint needs to run as root, then drops to btscanner
+# Container will start as root, entrypoint starts D-Bus, then switches to btscanner
+
 # Use entrypoint (runs as root to start dbus, then drops to btscanner)
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "dist/workers/bluetooth-scanner.js"]
