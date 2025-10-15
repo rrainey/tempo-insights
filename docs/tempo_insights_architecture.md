@@ -859,6 +859,313 @@ Logging and Monitoring Config: Not exactly asked, but worth noting: we can have 
 
 In summary, configuration is managed in a straightforward manner with .env and a constants module. Critical operational settings like time windows and thresholds are easily tweakable, supporting the need to fine-tune the system without deep code changes. This approach covers current needs and leaves room to evolve into a more dynamic settings management if required later.
 
+## Synchronization Architecture: On-Site to Cloud Replication
+
+A critical operational requirement for Tempo Insights is the ability to periodically synchronize data between the primary on-site Raspberry Pi deployment and a satellite cloud instance. This enables off-site data backup, remote viewing of jump data, and potential disaster recovery. The synchronization must handle both PostgreSQL database records and Supabase Storage binary files (jump logs), operate over intermittent connectivity, and support bidirectional changes with intelligent conflict resolution.
+
+### Use Case and Constraints
+
+The primary deployment runs on a Raspberry Pi 5 at the dropzone, directly connected to Tempo-BT devices via Bluetooth. This is the authoritative source for real-time device data, live jump uploads, and formation analysis. However, the on-site network may have limited or intermittent internet connectivity, and the system must continue operating autonomously even when disconnected.
+
+A secondary cloud instance (running on AWS, Google Cloud, or similar) serves as:
+- **Backup repository** for all jump data and user accounts
+- **Remote access point** for users to view their jumps when away from the dropzone
+- **Disaster recovery** instance if the on-site Pi fails
+- **Analytics platform** for aggregate statistics across multiple time periods
+
+The synchronization system must handle:
+- **Intermittent connectivity**: Sync operations pause gracefully when network unavailable and resume automatically
+- **Bidirectional changes**: Users might edit jump notes or profiles on either instance; changes must propagate
+- **Large binary files**: Jump logs can be up to 16MB each; hundreds may need syncing after extended offline periods
+- **Conflict resolution**: If the same record is modified on both instances, a deterministic resolution policy applies
+- **Security**: All sync traffic must be encrypted and authenticated
+
+### PostgreSQL Logical Replication for Database Sync
+
+PostgreSQL's built-in logical replication provides the foundation for database synchronization. Unlike physical replication (which requires identical server configurations), logical replication works at the SQL level, making it ideal for syncing between a Pi and cloud instance that may have different hardware architectures or PostgreSQL versions.
+
+**Architecture Overview:**
+Each PostgreSQL instance (main on-site, satellite in cloud) acts as both a publisher and a subscriber. The main instance publishes changes to the cloud; the cloud publishes changes back. This bidirectional setup requires careful configuration to avoid replication loops and handle conflicts.
+
+**Publication Configuration on Main Instance:**
+```sql
+-- Create publication for all user-facing tables
+CREATE PUBLICATION tempo_main_pub FOR TABLE 
+  "User", "Device", "JumpLog", "Group", "GroupMember", 
+  "FormationSkydive", "FormationParticipant", "Connection", 
+  "ConnectionRequest", "UserInvitation", "Dropzone", "AppSettings"
+  WITH (publish = 'insert, update, delete');
+
+-- Exclude real-time worker tables that don't need sync
+-- DeviceFileIndex, DeviceCommandQueue are main-only
+```
+
+**Subscription Configuration on Cloud Instance:**
+```sql
+-- Subscribe to main instance's publication
+CREATE SUBSCRIPTION tempo_cloud_sub
+  CONNECTION 'host=main-dropzone-ip port=5432 dbname=tempo user=replication_user password=secure_pass sslmode=require'
+  PUBLICATION tempo_main_pub
+  WITH (copy_data = true, create_slot = true);
+```
+
+The reverse setup (cloud publishes, main subscribes) mirrors this configuration. The `copy_data = true` option performs an initial bulk copy when first setting up the subscription, after which only incremental changes replicate.
+
+**Conflict Resolution Strategy:**
+Logical replication does not automatically handle conflicts (e.g., both instances update the same user's name simultaneously). We implement a conflict resolution layer:
+
+1. **Timestamp-based last-write-wins**: Each table's `updatedAt` column determines precedence. The sync worker detects conflicts by comparing timestamps and keeps the newest version.
+
+2. **Conflict logging**: All conflicts are recorded in the `ConflictLog` table for audit purposes. Admins can review and manually resolve if needed (though auto-resolution handles 99% of cases).
+
+3. **Append-only data**: For tables like `JumpLog` where records are rarely modified post-creation, conflicts are extremely rare. Notes and visibility flags can change, but the conflict window is small.
+
+**Implementation with Custom Sync Worker:**
+While PostgreSQL handles the replication itself, we build a sync coordination worker (`workers/sync-coordinator.ts`) that:
+- Monitors replication lag (using `pg_stat_replication` view)
+- Detects and logs conflicts by querying for rows with mismatched `updatedAt` vs replication slot positions
+- Triggers manual intervention notifications for critical conflicts (e.g., device ownership disputes)
+- Periodically validates data consistency by comparing row counts and checksums
+
+**Tables Excluded from Replication:**
+Certain tables remain instance-specific:
+- `DeviceFileIndex`: Each instance tracks its own uploaded files
+- `DeviceCommandQueue`: Commands are executed on the main instance only (cloud is read-only for device operations)
+- `SyncLog`: Sync metadata itself doesn't need syncing
+
+### Supabase Storage Synchronization for Binary Files
+
+Jump log files stored in Supabase Storage (the binary blobs referenced by `JumpLog.storagePath`) require a separate synchronization mechanism. PostgreSQL replication only handles the metadata; the actual files must be transferred independently.
+
+**Storage Architecture:**
+Both instances run their own Supabase Storage service (part of the Docker compose stack). The main instance's storage contains all original jump logs; the cloud instance mirrors this. When the database sync propagates a new `JumpLog` record, the storage sync worker detects the referenced file is missing and queues it for transfer.
+
+**Sync Worker Design (`workers/storage-sync.ts`):**
+This worker runs on both instances but with different roles:
+- **Main instance**: Publishes new files to cloud
+- **Cloud instance**: Pulls missing files from main
+
+The worker operates in a loop (every 5 minutes or on-demand trigger):
+
+1. **Inventory Check**: Query all `JumpLog` records where `storageUrl IS NOT NULL`
+2. **Manifest Comparison**: For each file, compute hash (already stored in `JumpLog.hash`) and check if it exists locally
+3. **Transfer Queue**: Missing files are added to a priority queue (newest jumps first)
+4. **Chunked Transfer**: Use Supabase Storage APIs to:
+   - Main: `storage.from('jump-logs').upload()` with retry logic
+   - Cloud: `storage.from('jump-logs').download()` the file, then `upload()` locally
+5. **Verification**: After transfer, verify hash matches; record in `SyncLog`
+
+**Optimization: Differential Sync**
+For very large files or slow connections, we implement a simple differential sync:
+- If a file was previously synced but has changed (rare, but possible if user re-uploads), compute a delta using a chunked hash approach (hash file in 1MB blocks)
+- Transfer only changed chunks
+- This is primarily for future-proofing; in practice, jump logs are immutable after upload
+
+**Bandwidth Management:**
+To avoid saturating limited dropzone internet:
+- Sync worker throttles transfers (max 5 concurrent, 1MB/s rate limit configurable)
+- Prioritizes recent jumps (last 7 days) over historical data
+- Pauses transfers if network latency exceeds threshold (indicating congestion)
+- Provides admin UI to manually trigger or pause sync
+
+**Storage URL Rewriting:**
+The `JumpLog.storageUrl` field contains the full URL to access the file. When syncing, the worker must rewrite URLs to point to the correct instance:
+- Main instance: `https://main-supabase.local:8000/storage/v1/object/public/jump-logs/...`
+- Cloud instance: `https://cloud-supabase.example.com:8000/storage/v1/object/public/jump-logs/...`
+
+The sync worker updates `storageUrl` after successful transfer, or uses a computed field approach where URLs are generated dynamically based on current instance context.
+
+### Conflict Resolution and Data Integrity
+
+**Conflict Categories:**
+
+1. **Non-Conflicting Changes** (90% of cases):
+   - User A edits their profile on main; User B edits theirs on cloud → No conflict
+   - New jump uploaded on main → Propagates to cloud without issue
+   - Connection request sent on cloud → Propagates to main
+
+2. **Benign Conflicts** (9% of cases):
+   - Same user edits their name on both instances before sync → Last-write-wins by timestamp
+   - Two users join the same public group simultaneously → Both additions succeed (independent records)
+
+3. **Critical Conflicts** (<1% of cases):
+   - Device ownership changed on both instances (e.g., admin reassigns on main while device is lent on cloud)
+   - Formation base jumper changed differently on each instance
+   - Group deleted on one instance while new member added on other
+
+**Resolution Policies:**
+
+**Policy 1: Automatic Last-Write-Wins**
+For most tables (`User`, `JumpLog` notes, `Group` descriptions), use `updatedAt` timestamp:
+```typescript
+// Pseudo-code for conflict detector
+if (mainRecord.updatedAt > cloudRecord.updatedAt) {
+  // Main wins: overwrite cloud record
+  await cloudDb.update(table, mainRecord);
+  await logConflict('AUTO_MAIN_WINS', table, id, mainRecord, cloudRecord);
+} else {
+  // Cloud wins: overwrite main record
+  await mainDb.update(table, cloudRecord);
+  await logConflict('AUTO_CLOUD_WINS', table, id, cloudRecord, mainRecord);
+}
+```
+
+**Policy 2: Main-Authoritative for Device Data**
+Anything related to devices (`Device` table, `DeviceCommandQueue`) always prefers the main instance's version. The cloud is read-only for device operations. If a conflict arises, main wins unconditionally.
+
+**Policy 3: Manual Review for Critical Operations**
+For high-impact changes (device ownership transfer, group deletion, formation base change), the sync worker flags the conflict and requires admin review:
+- Record in `ConflictLog` with `resolvedBy = NULL`
+- Send notification to admin dashboard
+- Block further sync of that record until resolved
+- Provide UI to view both versions and choose one
+
+**Data Integrity Checks:**
+Periodic validation runs (daily or on-demand) to ensure consistency:
+- **Row Count Comparison**: Each table should have the same count on both instances (minus real-time data)
+- **Checksum Validation**: For critical tables, compute and compare checksums of all rows
+- **Referential Integrity**: Ensure foreign key relationships are consistent (e.g., every `JumpLog.userId` references a valid `User.id` on both sides)
+
+If discrepancies detected, trigger a full reconciliation process that compares every row and logs differences.
+
+### Network Failure Handling and Retry Logic
+
+**Connection State Management:**
+The sync workers maintain a state machine for the connection to the remote instance:
+- **CONNECTED**: Active sync operations proceeding normally
+- **DEGRADED**: High latency or packet loss detected; throttling transfers
+- **DISCONNECTED**: Network unreachable; pausing sync and queuing changes
+- **RECONNECTING**: Attempting to re-establish connection with exponential backoff
+
+**Retry Strategy:**
+Database replication has built-in retry (PostgreSQL subscription will reconnect automatically). For storage sync, we implement:
+- **Exponential Backoff**: First retry after 30s, then 1m, 2m, 5m, 10m, max 1 hour intervals
+- **Persistent Queue**: Failed transfers remain in queue indefinitely; never discarded
+- **Partial Transfer Resume**: For large files, use range requests to resume from breakpoint if transfer interrupted midway
+- **Health Monitoring**: If sync has been offline for > 24 hours, alert admin dashboard
+
+**Graceful Degradation:**
+When network is unavailable:
+- Main instance continues operating normally (devices upload, analysis runs)
+- Changes accumulate in replication slot on main; will catch up when connection restored
+- Storage files queue locally; disk space monitoring ensures we don't fill the Pi's storage (alert if queue > 80% disk)
+
+**Sync Resume Logic:**
+When connection restored after extended offline period:
+```typescript
+async function resumeSync() {
+  // 1. Verify replication slot not dropped (max retention)
+  const slot = await checkReplicationSlot('tempo_cloud_sub');
+  if (!slot) {
+    // Slot dropped due to WAL retention limit
+    // Need to re-baseline: full copy_data sync
+    await reinitializeSubscription();
+  }
+  
+  // 2. Prioritize recent data
+  const pendingFiles = await getPendingSyncFiles();
+  const sorted = pendingFiles.sort((a, b) => b.createdAt - a.createdAt);
+  
+  // 3. Resume transfers with rate limiting
+  await transferBatch(sorted.slice(0, 100), { maxConcurrent: 3, rateLimit: '500KB/s' });
+}
+```
+
+### Monitoring and Observability
+
+**Sync Dashboard:**
+A dedicated section in the admin UI shows:
+- **Replication Lag**: Time delay between main and cloud for database sync (ideally < 5 seconds when connected)
+- **Storage Sync Queue**: Number of files pending transfer, oldest pending file age
+- **Last Successful Sync**: Timestamp of most recent successful sync operation
+- **Conflict Summary**: Count of auto-resolved and pending manual conflicts
+- **Bandwidth Usage**: Transfer rates and total bytes synced in last 24h
+
+**Metrics and Alerts:**
+Key metrics tracked in `SyncLog` table:
+- `syncType`: Which direction and data type
+- `recordsSynced`: Number of records/files in this sync run
+- `duration`: How long the sync took
+- `status`: SUCCESS, PARTIAL (some failures), FAILED (all failed)
+
+Alerts trigger for:
+- Replication lag > 1 hour
+- Sync failed for > 24 hours
+- Storage queue > 500 files
+- Conflict queue > 10 unresolved conflicts
+
+**Logging:**
+Detailed logs for troubleshooting:
+```typescript
+// Example sync log entry
+{
+  "timestamp": "2025-10-14T15:30:00Z",
+  "syncType": "STORAGE_TO_CLOUD",
+  "operation": "transfer_file",
+  "fileId": "abc123",
+  "fileName": "jump-2024-10-14-001.bin",
+  "fileSize": 8388608,
+  "status": "SUCCESS",
+  "duration_ms": 12450,
+  "retries": 0
+}
+```
+
+### Security Considerations for Sync
+
+**Transport Security:**
+All sync traffic encrypted:
+- PostgreSQL replication uses `sslmode=require` with certificate validation
+- Supabase Storage API calls over HTTPS with TLS 1.3
+- VPN tunnel optional for additional security (especially over public internet)
+
+**Authentication:**
+- Dedicated replication user with minimal privileges: `CREATE USER replication_user WITH REPLICATION PASSWORD '...';`
+- Supabase Storage uses service role keys (not anon keys) for sync worker
+- Mutual TLS certificates can be configured for PostgreSQL connections
+
+**Access Control:**
+- Replication user can only read/write specific tables via `GRANT` statements
+- Storage sync worker has separate bucket permissions (read-only on cloud, read-write on main for backup pulls)
+- Network firewall rules: Only PostgreSQL port (5432) and Supabase Kong port (8000) open between instances
+
+**Audit Trail:**
+Every sync operation logged with:
+- Source instance (main or cloud)
+- Timestamp
+- User/service account that initiated (if manual trigger)
+- Changes propagated (table, row IDs)
+- Stored in `SyncLog` on both instances for cross-validation
+
+### Implementation Roadmap
+
+**Phase 1: Database Replication Setup**
+- Configure PostgreSQL publications/subscriptions on both instances
+- Test bidirectional sync with small dataset
+- Implement basic conflict detection (log only, no auto-resolution yet)
+
+**Phase 2: Storage Sync Worker**
+- Build storage-sync.ts worker with basic file transfer
+- Implement queue management and retry logic
+- Test with small batch of jump logs
+
+**Phase 3: Conflict Resolution**
+- Implement automatic last-write-wins for safe tables
+- Build manual conflict review UI
+- Test conflict scenarios (simultaneous edits)
+
+**Phase 4: Monitoring and Ops**
+- Create sync dashboard in admin UI
+- Set up alerts for sync failures
+- Document runbooks for common issues (replication slot dropped, storage queue full, etc.)
+
+**Phase 5: Production Hardening**
+- Load testing: simulate 1000 jump logs syncing after 1 week offline
+- Failure testing: network interruptions, partial file transfers
+- Security audit: certificate validation, credential rotation procedures
+
+This synchronization architecture provides a robust, production-ready solution for keeping on-site and cloud instances in sync, handling the realities of intermittent connectivity while maintaining data integrity and security. The hybrid approach (PostgreSQL built-in replication + custom storage sync) leverages proven technologies while providing the flexibility needed for this specific use case.
+
 ## Integrated Services vs. External Processes
 
 Finally, to clearly distinguish which parts of the system run within the Next.js web application and which run as independent processes:
@@ -869,25 +1176,35 @@ All pages (UI rendering, SSR where used, etc.).
 
 The API routes that handle user requests (authentication, queries, admin actions). These routes execute within the Next.js runtime (Node.js server context).
 
-The web app also directly integrates certain Bluetooth actions and other services when triggered by the user. For example, when an admin clicks “Assign device”, the API route will call the Bluetooth library to perform that action in real-time and return the result. This means the Next.js server process needs Bluetooth access for those on-demand tasks. Since it’s running on the same machine with Bluetooth hardware, that’s possible (with necessary Linux capabilities if needed to allow a user process to access Bluetooth).
+The web app also directly integrates certain Bluetooth actions and other services when triggered by the user. For example, when an admin clicks "Assign device", the API route will call the Bluetooth library to perform that action in real-time and return the result. This means the Next.js server process needs Bluetooth access for those on-demand tasks. Since it's running on the same machine with Bluetooth hardware, that's possible (with necessary Linux capabilities if needed to allow a user process to access Bluetooth).
 
 Similarly, generating a claim QR code or zipping export data are done inside the web app process when requested.
 
-Bluetooth Log Discovery Service (External): This is a separate Node.js process (could be started by a script or as a daemon). It is not part of the Next.js request/response lifecycle. It runs continuously from system startup, performing BLE scans and file transfers in the background. It interacts with the database (via Prisma or direct SQL) to record device info and logs, but it does not expose a web interface or API endpoints. Its only “communication” with the main app is through the database. This service might be packaged as part of the project (the workers/bluetoothScanner.ts we described), and deployed such that it’s launched alongside (or via) the Next.js app. On a Raspberry Pi with Ubuntu, one might use a systemd service for it or a process manager like PM2 to ensure it stays running.
+Bluetooth Log Discovery Service (External): This is a separate Node.js process (could be started by a script or as a daemon). It is not part of the Next.js request/response lifecycle. It runs continuously from system startup, performing BLE scans and file transfers in the background. It interacts with the database (via Prisma or direct SQL) to record device info and logs, but it does not expose a web interface or API endpoints. Its only "communication" with the main app is through the database. This service might be packaged as part of the project (the workers/bluetoothScanner.ts we described), and deployed such that it's launched alongside (or via) the Next.js app. On a Raspberry Pi with Ubuntu, one might use a systemd service for it or a process manager like PM2 to ensure it stays running.
 
-It’s isolated so that any crashes or heavy Bluetooth operations don’t take down the web server. If it crashes, a supervisor restarts it.
+It's isolated so that any crashes or heavy Bluetooth operations don't take down the web server. If it crashes, a supervisor restarts it.
 
-The main web app doesn’t need to know if it’s currently running except that data appears when available. We do ensure only one instance runs, to avoid duplicate uploads.
+The main web app doesn't need to know if it's currently running except that data appears when available. We do ensure only one instance runs, to avoid duplicate uploads.
 
 Log Analysis Worker (External): This is another separate Node.js process or perhaps a scheduled job triggered by cron. The requirement suggests a continuously running process that wakes every 30 seconds, which is easiest as a simple while(true) loop with sleep. We can run this as its own script (e.g., node logProcessor.js) either manually or via a service manager. It reads and writes to the same DB as the web app.
 
-Because it’s separate, it can be started/stopped independently (for example, an admin could disable the worker if needed for maintenance without shutting down the web UI).
+Because it's separate, it can be started/stopped independently (for example, an admin could disable the worker if needed for maintenance without shutting down the web UI).
 
 If multiple instances accidentally run, we might process logs twice, but we can put a safeguard: e.g., a transaction to set a log as being processed. But given a single Pi deployment, we will run one instance.
 
-We explicitly avoid integrating this into the Next.js API routes or using something like Next.js middleware for cron, because long-running tasks in Next’s context could block or complicate the server. Offloading to an external process is cleaner.
+We explicitly avoid integrating this into the Next.js API routes or using something like Next.js middleware for cron, because long-running tasks in Next's context could block or complicate the server. Offloading to an external process is cleaner.
 
-Database (Supabase): Although Supabase is an external service (it runs Postgres, possibly on the Pi or a local network server), in terms of our architecture, it’s the shared resource rather than a service we implement. Both the web app and the background processes connect to it. Supabase also offers an API and potentially triggers/functions, but we aren’t required to use those. We rely on Prisma within our Node processes for all DB access. So the DB can be thought of as part of the infrastructure layer.
+Synchronization Workers (External): For deployments utilizing the cloud sync feature, three additional external worker processes run:
+
+**Replication Monitor** (`workers/replication-monitor.ts`): Continuously monitors PostgreSQL logical replication health, tracking replication lag, connection state, and slot status. Runs every 30 seconds, updating the SyncState table with current metrics. This worker detects network failures, dropped replication slots, and excessive lag, creating alerts in the SyncLog table when thresholds exceeded.
+
+**Conflict Scanner** (`workers/conflict-scanner.ts`): Runs every 5 minutes to detect data conflicts between main and cloud instances by comparing records with matching primary keys but different updatedAt timestamps or field values. When conflicts detected, it logs them to ConflictLog and applies automatic resolution strategies (last-write-wins for most tables, main-authoritative for device data). Critical conflicts that require manual review are flagged but not auto-resolved.
+
+**Storage Sync Worker** (`workers/storage-sync.ts`): Manages bidirectional file synchronization between Supabase Storage instances. Runs every 5 minutes (or on-demand trigger), comparing storage manifests to identify missing files, then transferring them with retry logic, rate limiting, and hash verification. Prioritizes recent jumps, respects bandwidth limits, and updates SyncState with queue size for monitoring.
+
+These sync workers only run when SYNC_ENABLED=true in environment configuration. On single-instance deployments (no cloud sync), they remain dormant. Like other workers, they communicate through the shared database rather than direct API calls, maintaining loose coupling and allowing independent restart/troubleshooting.
+
+Database (Supabase): Although Supabase is an external service (it runs Postgres, possibly on the Pi or a local network server), in terms of our architecture, it's the shared resource rather than a service we implement. Both the web app and the background processes connect to it. Supabase also offers an API and potentially triggers/functions, but we aren't required to use those. We rely on Prisma within our Node processes for all DB access. So the DB can be thought of as part of the infrastructure layer.
 
 ## Summary of Responsibilities:
 
@@ -897,10 +1214,12 @@ Background Bluetooth Service: Autonomous device discovery and log ingestion, upd
 
 Background Analysis Worker: Post-processing of data and creation of derived insights (formations, stats).
 
-These three operate concurrently and cooperatively.
+Background Sync Workers (optional): Database replication monitoring, conflict detection and resolution, storage file synchronization between instances.
 
-This separation aligns with the clarification that the Bluetooth harvesting can run separate, while some device actions need to be in the web backend. It also adheres to the idea that no specialized real-time server (like WebSocket server) is needed since polling suffices, simplifying the integration – we don’t need to push from background to front-end directly, we just write to DB and front-end pulls.
+These components operate concurrently and cooperatively, with the sync workers adding an optional layer for multi-instance deployments.
+
+This separation aligns with the clarification that the Bluetooth harvesting can run separate, while some device actions need to be in the web backend. It also adheres to the idea that no specialized real-time server (like WebSocket server) is needed since polling suffices, simplifying the integration — we don't need to push from background to front-end directly, we just write to DB and front-end pulls.
 
 Finally, we ensure that all these pieces can run on the Raspberry Pi 5 reliably. Node.js should be fine on that ARM architecture; Prisma will connect to the local Postgres; BlueZ is available on Ubuntu and mcumgr can be compiled or installed. We may need to run the Next.js server in production mode (next start with a built app) which typically is one process; our workers are separate Node processes started via separate scripts.
 
-By clearly delineating which services are in-process vs out-of-process, we reduce complexity in the code (each part can be relatively independent) and we can scale or troubleshoot them individually. For example, if logs aren’t being processed, we look at the worker process without disturbing the web server. This architecture is modular and robust, fitting the needs of a small-scale but multi-functional system deployed on dedicated hardware.
+By clearly delineating which services are in-process vs out-of-process, we reduce complexity in the code (each part can be relatively independent) and we can scale or troubleshoot them individually. For example, if logs aren't being processed, we look at the worker process without disturbing the web server. The sync workers add to this modularity: if synchronization encounters issues, only those workers need attention while core functionality (device scanning, analysis, web UI) continues operating normally. This architecture is modular and robust, fitting the needs of a small-scale but multi-functional system deployed on dedicated hardware.
