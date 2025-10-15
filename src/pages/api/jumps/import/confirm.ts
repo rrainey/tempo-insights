@@ -2,7 +2,7 @@
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { withAuth, AuthenticatedRequest } from '../../../../lib/auth/middleware';
-import { PrismaClient, DeviceState } from '@prisma/client';
+import { PrismaClient, DeviceState, UserRole } from '@prisma/client';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 
@@ -17,6 +17,7 @@ const confirmSchema = z.object({
   hash: z.string(),
   jumpNumber: z.number().int().positive().optional(),
   notes: z.string().nullable().optional(),
+  targetUserId: z.string().optional(),
 });
 
 declare global {
@@ -24,6 +25,7 @@ declare global {
     buffer: Buffer;
     originalFileName: string;
     userId: string;
+    targetUserId: string;
     timestamp: number;
   }>;
 }
@@ -46,15 +48,36 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
       });
     }
 
-    // Verify the cached data belongs to this user
+    // Verify the cached data belongs to this import session
     if (cachedData.userId !== req.user!.id) {
       return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // Get or create a manual import device for this user
+    // Determine the target user
+    const targetUserId = body.targetUserId || cachedData.targetUserId;
+
+    // Validate admin permission if importing for another user
+    const isAdmin = req.user!.role === UserRole.ADMIN || req.user!.role === UserRole.SUPER_ADMIN;
+    if (targetUserId !== req.user!.id && !isAdmin) {
+      return res.status(403).json({ 
+        error: 'Only administrators can import jumps on behalf of other users' 
+      });
+    }
+
+    // Verify target user exists
+    const targetUser = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, name: true, nextJumpNumber: true },
+    });
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
+    }
+
+    // Get or create a manual import device for the TARGET user
     let manualDevice = await prisma.device.findFirst({
       where: {
-        ownerId: req.user!.id,
+        ownerId: targetUserId,
         name: 'Manual Import',
       },
     });
@@ -62,17 +85,18 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
     if (!manualDevice) {
       manualDevice = await prisma.device.create({
         data: {
-          bluetoothId: `manual-${req.user!.id}`,
+          bluetoothId: `manual-${targetUserId}`,
           name: 'Manual Import',
           state: DeviceState.ACTIVE,
-          ownerId: req.user!.id,
+          ownerId: targetUserId,
           lastSeen: new Date(),
         },
       });
+      console.log(`[IMPORT] Created Manual Import device for user ${targetUser.name}`);
     }
 
     // Upload to Supabase Storage - same pattern as bluetooth scanner
-    const storagePath = `${req.user!.id}/${manualDevice.id}/${body.hash}.log`;
+    const storagePath = `${targetUserId}/${manualDevice.id}/${body.hash}.log`;
     console.log(`[IMPORT] Uploading to Supabase Storage: ${storagePath}`);
     
     const { data: uploadData, error: uploadError } = await supabase.storage
@@ -91,26 +115,21 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
     // Get the storage URL
     const storageUrl = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/jump-logs/${storagePath}`;
 
-    // Handle jump number - either use provided or auto-increment
+    // Handle jump number - either use provided or auto-increment for TARGET user
     let jumpNumber = body.jumpNumber;
     
     if (jumpNumber) {
-      // If user provided a specific jump number, update nextJumpNumber if needed
-      const currentUser = await prisma.user.findUnique({
-        where: { id: req.user!.id },
-        select: { nextJumpNumber: true },
-      });
-      
+      // If a specific jump number provided, update nextJumpNumber if needed
       await prisma.user.update({
-        where: { id: req.user!.id },
+        where: { id: targetUserId },
         data: {
-          nextJumpNumber: Math.max(jumpNumber + 1, currentUser?.nextJumpNumber || 1)
+          nextJumpNumber: Math.max(jumpNumber + 1, targetUser.nextJumpNumber)
         }
       });
     } else {
-      // Use and increment the user's nextJumpNumber
-      const user = await prisma.user.update({
-        where: { id: req.user!.id },
+      // Use and increment the TARGET user's nextJumpNumber
+      const updatedUser = await prisma.user.update({
+        where: { id: targetUserId },
         data: {
           nextJumpNumber: { increment: 1 }
         },
@@ -118,10 +137,10 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
           nextJumpNumber: true
         }
       });
-      jumpNumber = user.nextJumpNumber - 1;
+      jumpNumber = updatedUser.nextJumpNumber - 1;
     }
 
-    // Create the jump log entry - minimal data like bluetooth scanner
+    // Create the jump log entry for the TARGET user
     const jumpLog = await prisma.jumpLog.create({
       data: {
         hash: body.hash,
@@ -131,12 +150,13 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
         fileSize: cachedData.buffer.length,
         mimeType: 'application/octet-stream',
         deviceId: manualDevice.id,
-        userId: req.user!.id,
+        userId: targetUserId, // Jump belongs to target user
         offsets: {}, // Will be populated by analysis worker
         flags: {
           originalFileName: cachedData.originalFileName,
           uploadedAt: new Date().toISOString(),
           manualImport: true,
+          importedBy: req.user!.id !== targetUserId ? req.user!.id : undefined, // Track admin import
         },
         visibleToConnections: true,
         notes: body.notes || null,
@@ -144,16 +164,19 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
       },
     });
 
-    console.log(`[IMPORT] Created JumpLog with ID ${jumpLog.id} for user ${req.user!.id}`);
+    console.log(`[IMPORT] Created JumpLog with ID ${jumpLog.id} for user ${targetUser.name} (${targetUserId})`);
     console.log(`[IMPORT]   - Jump number: ${jumpNumber}`);
     console.log(`[IMPORT]   - Storage path: ${storagePath}`);
     console.log(`[IMPORT]   - File size: ${cachedData.buffer.length} bytes`);
+    if (req.user!.id !== targetUserId) {
+      console.log(`[IMPORT]   - Imported by admin: ${req.user!.name} (${req.user!.id})`);
+    }
 
     // Clean up the cached data
     global.importCache.delete(body.hash);
 
     return res.status(200).json({
-      message: 'Jump imported successfully',
+      message: `Jump imported successfully for ${targetUser.name}`,
       jumpId: jumpLog.id,
     });
 

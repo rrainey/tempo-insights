@@ -1,4 +1,4 @@
-// pages/api/jumps/import/index/.ts
+// pages/api/jumps/import/index.ts
 
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { withAuth, AuthenticatedRequest } from '../../../../lib/auth/middleware';
@@ -6,7 +6,7 @@ import { LogParser } from '../../../../lib/analysis/log-parser';
 import formidable from 'formidable';
 import { createReadStream } from 'fs';
 import crypto from 'crypto';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, UserRole } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -45,13 +45,37 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
 
   try {
     // Parse the multipart form data
-    const { files } = await parseForm(req);
+    const { fields, files } = await parseForm(req);
     
     // Get the uploaded file
     const uploadedFile = Array.isArray(files.file) ? files.file[0] : files.file;
     
     if (!uploadedFile) {
       return res.status(400).json({ error: 'No file provided' });
+    }
+
+    // Get targetUserId from fields if provided
+    const targetUserIdField = Array.isArray(fields.targetUserId) 
+      ? fields.targetUserId[0] 
+      : fields.targetUserId;
+    const targetUserId = targetUserIdField || req.user!.id;
+
+    // Validate admin permission if importing for another user
+    const isAdmin = req.user!.role === UserRole.ADMIN || req.user!.role === UserRole.SUPER_ADMIN;
+    if (targetUserId !== req.user!.id && !isAdmin) {
+      return res.status(403).json({ 
+        error: 'Only administrators can import jumps on behalf of other users' 
+      });
+    }
+
+    // Verify target user exists
+    const targetUser = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, name: true, nextJumpNumber: true, isProxy: true },
+    });
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found' });
     }
 
     // Read the file content
@@ -83,10 +107,10 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
     });
 
     if (existingJumpLog) {
-      // If it belongs to this user, just return success
-      if (existingJumpLog.userId === req.user!.id) {
+      // If it belongs to the target user, just return success
+      if (existingJumpLog.userId === targetUserId) {
         return res.status(200).json({
-          message: 'This jump log already exists in your account',
+          message: 'This jump log already exists for this user',
           existingJumpId: existingJumpLog.id,
           alreadyExists: true,
         });
@@ -99,19 +123,14 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
 
     // Get original filename from upload
     const originalFileName = uploadedFile.originalFilename || 'manual-upload.dat';
-    
-    // Get user's current nextJumpNumber for preview
-    const user = await prisma.user.findUnique({
-      where: { id: req.user!.id },
-      select: { nextJumpNumber: true },
-    });
 
-    // Store the file buffer temporarily
+    // Store the file buffer temporarily with target user info
     global.importCache = global.importCache || new Map();
     global.importCache.set(hash, {
       buffer: fileBuffer,
       originalFileName: originalFileName,
-      userId: req.user!.id,
+      userId: req.user!.id, // Who initiated the import
+      targetUserId: targetUserId, // Who the jump is for
       timestamp: Date.now(),
     });
 
@@ -123,13 +142,17 @@ export default withAuth(async (req: AuthenticatedRequest, res: NextApiResponse) 
       }
     }
 
+    console.log(`[IMPORT] File uploaded by ${req.user!.name} for user ${targetUser.name} (${targetUserId})`);
+
     return res.status(200).json({
       message: 'File uploaded successfully',
       fileInfo: {
         hash: hash,
         fileName: originalFileName,
         fileSize: fileBuffer.length,
-        suggestedJumpNumber: user?.nextJumpNumber || 1,
+        suggestedJumpNumber: targetUser.nextJumpNumber,
+        targetUserId: targetUserId,
+        targetUserName: targetUser.name,
         // Include validation data if available
         startDate: validation.startDate?.toISOString() || null,
         startLocation: validation.startLocation || null,

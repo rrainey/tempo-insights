@@ -1,6 +1,6 @@
 // components/home/ImportJumpModal.tsx
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   Button,
@@ -15,6 +15,7 @@ import {
   rem,
   LoadingOverlay,
   Badge,
+  Select,
 } from '@mantine/core';
 import { Dropzone } from '@mantine/dropzone';
 import { notifications } from '@mantine/notifications';
@@ -28,6 +29,7 @@ import {
   IconCalendar,
   IconFileDescription,
   IconMapPin,
+  IconUser,
 } from '@tabler/icons-react';
 
 interface ImportJumpModalProps {
@@ -47,7 +49,18 @@ interface FileInfo {
     lon_deg: number;
     alt_m: number;
   } | null;
+  targetUserId: string;
+  targetUserName: string;
 }
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  nextJumpNumber: number;
+}
+
+const LAST_TARGET_USER_KEY = 'tempo-last-import-target-user';
 
 export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJumpModalProps) {
   const [active, setActive] = useState(0);
@@ -56,6 +69,13 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
+  // User selection (admin only)
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [users, setUsers] = useState<User[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  
   // File info from upload
   const [fileInfo, setFileInfo] = useState<FileInfo | null>(null);
   const [alreadyExists, setAlreadyExists] = useState(false);
@@ -63,6 +83,70 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
   // Form fields for confirmation
   const [jumpNumber, setJumpNumber] = useState<number | undefined>();
   const [notes, setNotes] = useState('');
+
+  // Load current user and check if admin
+  useEffect(() => {
+    if (opened) {
+      loadCurrentUser();
+    }
+  }, [opened]);
+
+  // Load users list if admin
+  useEffect(() => {
+    if (isAdmin && opened) {
+      loadUsers();
+    }
+  }, [isAdmin, opened]);
+
+  const loadCurrentUser = async () => {
+    try {
+      const response = await fetch('/api/auth/me');
+      if (!response.ok) throw new Error('Failed to load user');
+      
+      const data = await response.json();
+      const user = data.user;
+      setCurrentUser(user);
+      
+      const adminStatus = user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+      setIsAdmin(adminStatus);
+      
+      if (adminStatus) {
+        // Try to load last selected user from localStorage
+        const lastUserId = localStorage.getItem(LAST_TARGET_USER_KEY);
+        if (lastUserId) {
+          setSelectedUserId(lastUserId);
+        } else {
+          // Default to current admin user
+          setSelectedUserId(user.id);
+        }
+      } else {
+        // Regular users always import for themselves
+        setSelectedUserId(user.id);
+      }
+    } catch (error) {
+      console.error('Error loading current user:', error);
+    }
+  };
+
+  const loadUsers = async () => {
+    setLoadingUsers(true);
+    try {
+      const response = await fetch('/api/users?excludeProxies=true&limit=100');
+      if (!response.ok) throw new Error('Failed to load users');
+      
+      const data = await response.json();
+      setUsers(data.users);
+    } catch (error) {
+      console.error('Error loading users:', error);
+      notifications.show({
+        title: 'Error',
+        message: 'Failed to load users list',
+        color: 'red',
+      });
+    } finally {
+      setLoadingUsers(false);
+    }
+  };
 
   const handleFileSelect = (files: File[]) => {
     if (files.length > 0) {
@@ -73,7 +157,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
   };
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (!file || !selectedUserId) return;
 
     setUploading(true);
     setError(null);
@@ -81,6 +165,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('targetUserId', selectedUserId);
 
       const response = await fetch('/api/jumps/import', {
         method: 'POST',
@@ -98,7 +183,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
         setAlreadyExists(true);
         notifications.show({
           title: 'Duplicate File',
-          message: 'This jump log already exists in your account',
+          message: 'This jump log already exists for this user',
           color: 'blue',
         });
         return;
@@ -122,7 +207,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
   };
 
   const handleFinish = async () => {
-    if (!fileInfo) return;
+    if (!fileInfo || !selectedUserId) return;
 
     setProcessing(true);
     setError(null);
@@ -135,6 +220,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
           hash: fileInfo.hash,
           jumpNumber: jumpNumber || undefined,
           notes: notes || null,
+          targetUserId: selectedUserId,
         }),
       });
 
@@ -143,12 +229,19 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
         throw new Error(errorData.error || 'Failed to save jump');
       }
 
+      const data = await response.json();
+
       notifications.show({
         title: 'Success',
-        message: 'Jump imported successfully. Processing will begin shortly.',
+        message: data.message || 'Jump imported successfully. Processing will begin shortly.',
         color: 'green',
         icon: <IconCheck />,
       });
+
+      // Save selected user to localStorage for next time (admins only)
+      if (isAdmin) {
+        localStorage.setItem(LAST_TARGET_USER_KEY, selectedUserId);
+      }
 
       // Reset and close
       handleClose();
@@ -174,6 +267,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
     setNotes('');
     setError(null);
     setAlreadyExists(false);
+    // Don't reset selectedUserId - keep it for next import
     onClose();
   };
 
@@ -183,6 +277,13 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
   const formatFileSize = (bytes: number) => {
     const mb = bytes / 1024 / 1024;
     return `${mb.toFixed(2)} MB`;
+  };
+
+  const getUserSelectData = () => {
+    return users.map(user => ({
+      value: user.id,
+      label: `${user.name} (${user.email})`,
+    }));
   };
 
   return (
@@ -196,7 +297,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
       <LoadingOverlay visible={uploading || processing} />
       
       <Stepper active={active} onStepClick={setActive}>
-        <Stepper.Step label="Upload File" description="Select jump log file">
+        <Stepper.Step label="Select User & Upload" description="Choose target user and file">
           <Stack mt="xl">
             {error && (
               <Alert icon={<IconAlertCircle />} color="red" variant="light">
@@ -206,16 +307,34 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
 
             {alreadyExists && (
               <Alert icon={<IconAlertCircle />} color="blue" variant="light">
-                This jump log already exists in your account. Please select a different file.
+                This jump log already exists for this user. Please select a different file.
               </Alert>
             )}
 
+            {/* User Selection - Admin Only */}
+            {isAdmin && (
+              <Select
+                label="Import for User"
+                description="Select the user this jump log belongs to"
+                placeholder="Select a user..."
+                data={getUserSelectData()}
+                value={selectedUserId}
+                onChange={setSelectedUserId}
+                searchable
+                leftSection={<IconUser size={16} />}
+                disabled={loadingUsers}
+                required
+              />
+            )}
+
+            {/* File Upload */}
             {!file ? (
               <Dropzone
                 onDrop={handleFileSelect}
                 onReject={(files) => setError('Invalid file type')}
                 maxSize={16 * 1024 * 1024} // 16MB
                 accept={['application/octet-stream', 'text/plain']}
+                disabled={!selectedUserId}
               >
                 <Group justify="center" gap="xl" style={{ minHeight: rem(220), pointerEvents: 'none' }}>
                   <Dropzone.Accept>
@@ -244,6 +363,11 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
                     <Text size="sm" color="dimmed" inline mt={7}>
                       Attach a Tempo jump log file (.txt, or .log), max size 16MB
                     </Text>
+                    {!selectedUserId && (
+                      <Text size="sm" color="red" inline mt={7}>
+                        Please select a user first
+                      </Text>
+                    )}
                   </div>
                 </Group>
               </Dropzone>
@@ -278,6 +402,13 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
           <Stack mt="xl">
             {fileInfo && (
               <>
+                {/* Target User Info - Admin Only */}
+                {isAdmin && (
+                  <Alert icon={<IconUser />} color="blue" variant="light">
+                    Importing jump for: <strong>{fileInfo.targetUserName}</strong>
+                  </Alert>
+                )}
+
                 {/* File Information */}
                 <Paper p="md" withBorder>
                   <Text size="sm" fw={600} mb="sm">File Information</Text>
@@ -338,7 +469,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
 
                   <NumberInput
                     label="Jump Number"
-                    description="From your logbook (optional - will auto-increment if left blank)"
+                    description="From logbook (optional - will auto-increment if left blank)"
                     placeholder={`Suggested: ${fileInfo.suggestedJumpNumber}`}
                     value={jumpNumber}
                     onChange={(val) => {
@@ -361,7 +492,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
                 </Stack>
 
                 <Alert icon={<IconAlertCircle />} color="blue" variant="light" mt="md">
-                  After import, your jump will be automatically analyzed. Exit time, freefall time, 
+                  After import, the jump will be automatically analyzed. Exit time, freefall time, 
                   and other metrics will appear once processing is complete.
                 </Alert>
               </>
@@ -383,7 +514,7 @@ export function ImportJumpModal({ opened, onClose, onImportComplete }: ImportJum
           {active === 0 && (
             <Button
               onClick={handleUpload}
-              disabled={!file || uploading || alreadyExists}
+              disabled={!file || !selectedUserId || uploading || alreadyExists}
               loading={uploading}
             >
               Next
