@@ -85,7 +85,7 @@ services:
   tempo-bt-scanner:
     image: tempo-bt-scanner:latest
     container_name: tempo-bt-scanner
-    
+
     # Build configuration
     build:
       context: .
@@ -93,8 +93,10 @@ services:
       platforms:
         - linux/arm64
     
+    # Disable user namespace remapping
+    userns_mode: host
+    
     # Network configuration - MUST use host mode for Bluetooth
-    # This means it connects to Postgres via localhost:5432
     network_mode: host
     
     # Security capabilities for Bluetooth access
@@ -109,18 +111,19 @@ services:
     
     # Volume mounts
     volumes:
-      # D-Bus socket for BlueZ communication
-      - /run/dbus:/run/dbus:ro
+      # D-Bus socket
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       # smpmgr plugins
       - ./smpmgr-extensions/plugins:/opt/smpmgr-extensions/plugins:ro
     
     # Environment variables
     env_file:
-      - .env.docker.bt-scanner  # Separate env file for host network mode
+      - .env.docker.bt-scanner
     
     environment:
       - NODE_ENV=production
       - SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
+      - DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket
     
     # Restart policy
     restart: unless-stopped
