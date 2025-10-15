@@ -113,20 +113,21 @@ RUN apt-get update && apt-get install -y \
 # Copy Python virtual environment with smpmgr
 COPY --from=python-builder /opt/venv /opt/venv
 
-# Create user and add to messagebus group
+# Create groups and user with proper memberships
 # messagebus GID is typically 103 on Debian/Ubuntu
-RUN groupadd -g 103 messagebus || true && \
-    groupadd -g 1001 btscanner && \
-    useradd -u 1001 -g btscanner -G messagebus -m -s /bin/bash btscanner
+# bluetooth group usually already exists in bluez package
+RUN groupadd -g 103 messagebus 2>/dev/null || true && \
+    groupadd -g 1001 btscanner 2>/dev/null || true && \
+    useradd -u 1001 -g btscanner -G messagebus,bluetooth -m -s /bin/bash btscanner
 
 # Copy smpmgr extensions/plugins
-COPY --chown=node:node smpmgr-extensions/plugins /opt/smpmgr-extensions/plugins
+COPY --chown=btscanner:btscanner smpmgr-extensions/plugins /opt/smpmgr-extensions/plugins
 
 # Copy compiled JavaScript and dependencies
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/package.json ./
+COPY --from=builder --chown=btscanner:btscanner /app/dist ./dist
+COPY --from=builder --chown=btscanner:btscanner /app/node_modules ./node_modules
+COPY --from=builder --chown=btscanner:btscanner /app/prisma ./prisma
+COPY --from=builder --chown=btscanner:btscanner /app/package.json ./
 
 # Set PATH to include Python venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -134,9 +135,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Set environment for production
 ENV NODE_ENV=production
 ENV SMPMGR_PLUGIN_PATH=/opt/smpmgr-extensions/plugins
-
-# Create non-root user for security
-RUN useradd -u 1001 -g bluetooth -m -s /bin/bash btscanner
 
 # Switch to non-root user
 USER btscanner
