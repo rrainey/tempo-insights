@@ -12,6 +12,23 @@
 # - Better error handling and verification
 # ===================================
 
+urlencode() {
+    local string="${1}"
+    local strlen=${#string}
+    local encoded=""
+    local pos c o
+
+    for (( pos=0 ; pos<strlen ; pos++ )); do
+        c=${string:$pos:1}
+        case "$c" in
+            [-_.~a-zA-Z0-9] ) o="${c}" ;;
+            * ) printf -v o '%%%02x' "'$c"
+        esac
+        encoded+="${o}"
+    done
+    echo "${encoded}"
+}
+
 set -e  # Exit on error
 
 # Color codes for output
@@ -469,6 +486,9 @@ fi
 # Generate worker token
 WORKER_TOKEN=$(openssl rand -base64 64 | tr -d '\n')
 
+# URL-encode password for safe use in connection string
+POSTGRES_PASSWORD_ENCODED=$(urlencode "$POSTGRES_PASSWORD")
+
 # Create .env for local tooling
 cat > .env << EOF
 # ===================================
@@ -483,7 +503,7 @@ cat > .env << EOF
 # ===================================
 # Using direct PostgreSQL connection (port 5432)
 # Note: Supavisor pooler requires additional tenant configuration
-DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@localhost:5432/postgres"
+DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD_ENCODED}@localhost:5432/postgres"
 
 # ===================================
 # Security & Authentication
@@ -641,7 +661,7 @@ cat > .env.docker << EOF
 # Database Connection
 # ===================================
 # Internal Docker network - connects via service name
-DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres"
+DATABASE_URL="postgresql://postgres:${POSTGRES_PASSWORD_ENCODED}@supabase-db:5432/postgres"
 
 # ===================================
 # Security & Authentication
