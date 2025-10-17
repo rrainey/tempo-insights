@@ -673,7 +673,7 @@ USE_SECURE_COOKIES="${USE_SECURE_COOKIES}"
 # ===================================
 # Supabase Configuration
 # ===================================
-NEXT_PUBLIC_SUPABASE_URL="http://localhost:8000"
+NEXT_PUBLIC_SUPABASE_URL="http:///supabase-kong:8000"
 NEXT_PUBLIC_SUPABASE_ANON_KEY="${ANON_KEY}"
 SUPABASE_SERVICE_KEY="${SERVICE_ROLE_KEY}"
 
