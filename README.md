@@ -213,18 +213,22 @@ graph TB
 - **Node.js** 20.x
 - **pnpm** 8.x+
 
-### Tempo-BT Devices
+### The Tempo-BT Logger
+TempoBT is an open-source hardware device. It combines a GPS receiver, Inertial Measurement Unit, Barometer, and Compass sensors to log a skydiver's position an orientation with high precision.
 
-- ESP32-S3 based devices running Tempo-BT firmware
+- see https://github.com/rrainey/tempo/tree/main/zephyr/tempo-bt-v1
+- u-blox NORA-B106 logging based devices running Tempo-BT firmware
 - Configured to advertise as `Tempo-BT-xxxx` or `Tempo-BT-unprovisioned`
 
 ---
 
 ## Quick Start
 
-- Install git
-- Install Node 20
-- Install pnpm
+### Prerequisites
+
+- git
+- Node 20
+- pnpm
 
 ### Development Setup
 
