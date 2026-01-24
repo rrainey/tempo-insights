@@ -1,11 +1,21 @@
 import { PrismaClient, DeviceState } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import { config } from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { createClient } from '@supabase/supabase-js';
+import { calculateGeoJSONBounds } from '../src/lib/overlays/geojson-overlay';
 
 // Load environment variables from .env.local
 config({ path: '.env.local' });
 
 const prisma = new PrismaClient();
+
+// Initialize Supabase client for storage operations
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_KEY!
+);
 
 async function main() {
   // Create admin user
@@ -108,6 +118,63 @@ async function main() {
   });
 
   console.log({ device1, device2, device3, dropzone1, dropzone2, dropzone3 });
+
+  // Seed the Spaceland Dallas landing areas overlay
+  const ssdAreasPath = path.join(__dirname, '../docs/SSD-areas.json');
+
+  if (fs.existsSync(ssdAreasPath)) {
+    const ssdAreasContent = fs.readFileSync(ssdAreasPath, 'utf-8');
+    const ssdAreasGeoJSON = JSON.parse(ssdAreasContent);
+    const ssdAreasBounds = calculateGeoJSONBounds(ssdAreasGeoJSON);
+
+    if (ssdAreasBounds) {
+      const storagePath = 'ssd-landing-areas.json';
+
+      // Upload to Supabase Storage (upsert)
+      const { error: uploadError } = await supabase.storage
+        .from('map-overlays')
+        .upload(storagePath, ssdAreasContent, {
+          contentType: 'application/json',
+          upsert: true
+        });
+
+      if (uploadError && !uploadError.message.includes('already exists')) {
+        console.error('Failed to upload SSD areas overlay:', uploadError);
+      } else {
+        // Create or update database record
+        const ssdOverlay = await prisma.mapOverlay.upsert({
+          where: { storagePath: storagePath },
+          update: {
+            name: 'Spaceland Dallas Landing Areas',
+            description: 'A, B, C, and D/Tandem landing areas at Skydive Spaceland Dallas',
+            minLon: ssdAreasBounds.minLon,
+            minLat: ssdAreasBounds.minLat,
+            maxLon: ssdAreasBounds.maxLon,
+            maxLat: ssdAreasBounds.maxLat,
+            featureCount: ssdAreasGeoJSON.features.length,
+            fileSize: Buffer.byteLength(ssdAreasContent, 'utf-8'),
+          },
+          create: {
+            name: 'Spaceland Dallas Landing Areas',
+            description: 'A, B, C, and D/Tandem landing areas at Skydive Spaceland Dallas',
+            storagePath,
+            minLon: ssdAreasBounds.minLon,
+            minLat: ssdAreasBounds.minLat,
+            maxLon: ssdAreasBounds.maxLon,
+            maxLat: ssdAreasBounds.maxLat,
+            featureCount: ssdAreasGeoJSON.features.length,
+            fileSize: Buffer.byteLength(ssdAreasContent, 'utf-8'),
+            isVisible: true,
+            uploadedById: admin.id
+          }
+        });
+
+        console.log({ ssdOverlay });
+      }
+    }
+  } else {
+    console.log('SSD-areas.json not found, skipping overlay seed');
+  }
 }
 
 main()

@@ -155,53 +155,56 @@ Ensure these are propagated to the `gps` array in `LogParser.parseLog()`.
 
 ---
 
-## Phase 2: Caching Tile Server (Implement Later)
+## Phase 2: Caching Tile Server (IMPLEMENTED)
 
-### 2.1 Create API Route
+### 2.1 Tile Cache Service
 
-**File:** `src/pages/api/tiles/[...params].ts`
+**File:** `src/lib/tiles/tile-cache.ts`
 
-This will handle requests like `/api/tiles/12/1234/5678.png`
+Core caching service with:
+- Rate limiting (500ms between OSM requests = 2 req/sec)
+- Supabase Storage backend
+- Zoom level validation (z=8-18)
+- Cache hit/miss tracking
 
-**Logic:**
-1. Parse z/x/y from URL params
-2. Construct cache key: `tiles/{z}/{x}/{y}.png`
-3. Check Supabase Storage for cached tile
-4. If cached: return tile from storage
-5. If not cached:
-   - Fetch from `https://tile.openstreetmap.org/{z}/{x}/{y}.png`
-   - Set User-Agent header: `"tempo-insights"`
-   - Store in Supabase Storage
-   - Return tile to client
+### 2.2 API Routes
 
-**Caching Strategy:**
-- Store tiles in Supabase Storage bucket: `map-tiles`
-- Path structure: `{z}/{x}/{y}.png`
-- No expiration (tiles are static unless OSM updates)
-- Consider limiting zoom levels cached (e.g., z=10-18)
+**Tile Proxy:** `GET /api/tiles/{z}/{x}/{y}.png`
+- Validates tile coordinates
+- Returns cached tile if available
+- Fetches from OSM on cache miss, stores for future requests
+- Returns `X-Tile-Cache: HIT` or `MISS` header
 
-### 2.2 Create Supabase Storage Bucket
+**Admin Flush:** `POST /api/admin/tiles/flush`
+- Requires ADMIN or SUPER_ADMIN role
+- Deletes all cached tiles from Supabase Storage
+- Returns count of deleted tiles
 
-Add bucket configuration for map tiles:
-- Bucket name: `map-tiles`
+**Admin Stats:** `GET /api/admin/tiles/stats`
+- Requires ADMIN or SUPER_ADMIN role
+- Returns cache statistics (tile count, total size, oldest/newest tile)
+
+### 2.3 Supabase Storage Bucket
+
+**Bucket:** `map-tiles`
 - Public access: false (served through API)
-- File size limit: 256KB (tiles are small)
+- File size limit: 256KB per tile
+- Allowed MIME types: `image/png`
 
-### 2.3 Rate Limiting Considerations
+**Setup:** Run `npm run setup:tile-storage` to create the bucket.
+
+### 2.4 Rate Limiting
 
 Per OSM tile usage policy:
 - Maximum 2 requests/second to OSM servers
-- Implement request queue with rate limiting
-- Cache aggressively to minimize upstream requests
+- Enforced with 500ms minimum delay between OSM fetches
+- User-Agent: `tempo-insights`
 
-### 2.4 Update GNSSPathMap Tile Source
+### 2.5 GNSSPathMap Integration
 
-Switch from direct OSM URL to local proxy:
-
+The component now uses the local proxy:
 ```typescript
-const tileSource = process.env.NODE_ENV === 'production'
-  ? '/api/tiles/{z}/{x}/{y}.png'
-  : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const tileUrl = '/api/tiles/{z}/{x}/{y}.png';
 ```
 
 ---
@@ -212,16 +215,24 @@ const tileSource = process.env.NODE_ENV === 'production'
 src/
 ├── components/
 │   └── home/
-│       ├── GNSSPathMap.tsx          # New - MapLibre GL map component
-│       └── JumpDetailsPanel.tsx      # Modified - add map integration
+│       ├── GNSSPathMap.tsx          # MapLibre GL map component
+│       └── JumpDetailsPanel.tsx      # Modified - map integration
 ├── lib/
-│   └── analysis/
-│       ├── gps-path-utils.ts        # New - GPS/GeoJSON utilities
-│       └── log-parser.ts            # Modified - ensure groundspeed in gps array
-└── pages/
-    └── api/
-        └── tiles/
-            └── [...params].ts        # New - caching tile proxy (Phase 2)
+│   ├── analysis/
+│   │   ├── gps-path-utils.ts        # GPS/GeoJSON utilities, phase colors
+│   │   └── log-parser.ts            # Modified - groundspeed in gps array
+│   └── tiles/
+│       └── tile-cache.ts            # Tile caching service
+├── pages/
+│   └── api/
+│       ├── tiles/
+│       │   └── [...params].ts       # Caching tile proxy
+│       └── admin/
+│           └── tiles/
+│               ├── flush.ts         # Admin: flush tile cache
+│               └── stats.ts         # Admin: cache statistics
+└── scripts/
+    └── setup-tile-storage.ts        # Bucket setup script
 ```
 
 ---

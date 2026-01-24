@@ -17,12 +17,17 @@ import {
   formatGroundspeed,
   getPhaseLabel
 } from '../../lib/analysis/gps-path-utils';
+import {
+  type GeoJSONFeatureCollection,
+  LANDING_AREA_STYLE
+} from '../../lib/overlays/geojson-overlay';
 
 interface GNSSPathMapProps {
   gpsData: GPSPoint[];
   exitOffsetSec?: number;
   deploymentOffsetSec?: number;
   landingOffsetSec?: number;
+  overlays?: GeoJSONFeatureCollection[];
 }
 
 interface HoverInfo {
@@ -37,7 +42,8 @@ export function GNSSPathMap({
   gpsData,
   exitOffsetSec,
   deploymentOffsetSec,
-  landingOffsetSec
+  landingOffsetSec,
+  overlays = []
 }: GNSSPathMapProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -67,6 +73,9 @@ export function GNSSPathMap({
     const center = calculateCenter(gpsData);
     if (!center) return;
 
+    // Use local caching proxy for tiles
+    const tileUrl = '/api/tiles/{z}/{x}/{y}.png';
+
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: {
@@ -74,7 +83,7 @@ export function GNSSPathMap({
         sources: {
           osm: {
             type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tiles: [tileUrl],
             tileSize: 256,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           }
@@ -90,8 +99,7 @@ export function GNSSPathMap({
         ]
       },
       center: center,
-      zoom: 14,
-      attributionControl: true
+      zoom: 14
     });
 
     // Add navigation controls
@@ -104,7 +112,50 @@ export function GNSSPathMap({
       mapRef.current = map;
       setMapLoaded(true);
 
-      // Add sources for each phase segment
+      // Add GeoJSON overlay layers first (so they appear under the flight path)
+      overlays.forEach((overlay, index) => {
+        const sourceId = `overlay-${index}`;
+
+        map.addSource(sourceId, {
+          type: 'geojson',
+          // Cast to GeoJSON.FeatureCollection for MapLibre compatibility
+          data: overlay as GeoJSON.FeatureCollection
+        });
+
+        // Add fill layer for polygons
+        map.addLayer({
+          id: `${sourceId}-fill`,
+          type: 'fill',
+          source: sourceId,
+          paint: {
+            'fill-color': LANDING_AREA_STYLE.fillColor,
+            'fill-opacity': LANDING_AREA_STYLE.fillOpacity
+          },
+          filter: ['any',
+            ['==', ['geometry-type'], 'Polygon'],
+            ['==', ['geometry-type'], 'MultiPolygon']
+          ]
+        });
+
+        // Add stroke layer for polygons and lines
+        map.addLayer({
+          id: `${sourceId}-stroke`,
+          type: 'line',
+          source: sourceId,
+          paint: {
+            'line-color': LANDING_AREA_STYLE.strokeColor,
+            'line-width': LANDING_AREA_STYLE.strokeWidth
+          },
+          filter: ['any',
+            ['==', ['geometry-type'], 'Polygon'],
+            ['==', ['geometry-type'], 'MultiPolygon'],
+            ['==', ['geometry-type'], 'LineString'],
+            ['==', ['geometry-type'], 'MultiLineString']
+          ]
+        });
+      });
+
+      // Add sources for each phase segment (these will appear on top of overlays)
       const phases: JumpPhase[] = ['climb', 'freefall', 'canopy', 'landed'];
 
       phases.forEach(phase => {
@@ -181,7 +232,7 @@ export function GNSSPathMap({
       mapRef.current = null;
       setMapLoaded(false);
     };
-  }, [gpsData]); // Only reinitialize when gpsData changes
+  }, [gpsData, overlays]); // Reinitialize when gpsData or overlays change
 
   // Update path segments when phase filter or data changes
   useEffect(() => {

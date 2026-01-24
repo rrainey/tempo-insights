@@ -12,7 +12,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "test": "jest",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "setup:tile-storage": "tsx src/scripts/setup-tile-storage.ts",
+    "setup:overlay-storage": "tsx src/scripts/setup-overlay-storage.ts"
   },
   "dependencies": {
     "@mantine/core": "^8.3.2",

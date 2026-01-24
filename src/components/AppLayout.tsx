@@ -11,7 +11,8 @@ import {
   IconCpu,
   IconLogout,
   IconMapPin,
-  IconUserPlus
+  IconUserPlus,
+  IconPolygon
 } from '@tabler/icons-react';
 import { logout } from '../lib/auth/logout';
 
@@ -118,6 +119,13 @@ export function AppLayout({ children }: AppLayoutProps) {
                 label="Dropzones (Admin)"
                 leftSection={<IconMapPin size={16} />}
                 active={router.pathname === '/dropzones'}
+              />
+              <NavLink
+                component={Link}
+                href="/map-overlays"
+                label="Map Overlays (Admin)"
+                leftSection={<IconPolygon size={16} />}
+                active={router.pathname === '/map-overlays'}
               />
             </>
           )}

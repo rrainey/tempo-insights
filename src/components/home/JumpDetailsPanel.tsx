@@ -8,6 +8,7 @@ import { VelocityBinChart } from './VelocityBinChart';
 import { GNSSPathMap } from './GNSSPathMap';
 import { notifications } from '@mantine/notifications';
 import type { TimeSeriesPoint, GPSPoint } from '../../lib/analysis/log-parser';
+import type { GeoJSONFeatureCollection } from '../../lib/overlays/geojson-overlay';
 
 interface JumpTimeSeries {
   altitude: TimeSeriesPoint[];
@@ -103,6 +104,9 @@ export function JumpDetailsPanel({ jumpId, onJumpDeleted }: JumpDetailsPanelProp
   const [velocityBinData, setVelocityBinData] = useState<VelocityBinResponse | null>(null);
   const [loadingVelocityBins, setLoadingVelocityBins] = useState(false);
 
+  // GeoJSON overlays for the map
+  const [mapOverlays, setMapOverlays] = useState<GeoJSONFeatureCollection[]>([]);
+
   useEffect(() => {
     if (jumpId) {
       fetchJumpDetails(jumpId);
@@ -111,6 +115,41 @@ export function JumpDetailsPanel({ jumpId, onJumpDeleted }: JumpDetailsPanelProp
       setVelocityBinData(null);
     }
   }, [jumpId]);
+
+  // Load GeoJSON overlays for the map from database
+  useEffect(() => {
+    const loadOverlays = async () => {
+      try {
+        // Fetch visible overlays from database
+        const response = await fetch('/api/map-overlays?visibleOnly=true');
+        if (!response.ok) {
+          return;
+        }
+
+        const data = await response.json();
+        if (!data.overlays || data.overlays.length === 0) {
+          return;
+        }
+
+        // Fetch GeoJSON for each visible overlay
+        const overlayPromises = data.overlays.map(async (overlay: { id: string }) => {
+          const overlayResponse = await fetch(`/api/map-overlays/${overlay.id}?download=true`);
+          if (overlayResponse.ok) {
+            const overlayData = await overlayResponse.json();
+            return overlayData.geojson;
+          }
+          return null;
+        });
+
+        const geojsonOverlays = (await Promise.all(overlayPromises)).filter(Boolean);
+        setMapOverlays(geojsonOverlays);
+      } catch (error) {
+        console.error('Failed to load map overlays:', error);
+        // Don't show error to user - overlays are optional
+      }
+    };
+    loadOverlays();
+  }, []);
 
   const fetchJumpDetails = async (id: string) => {
     setLoading(true);
@@ -536,6 +575,7 @@ export function JumpDetailsPanel({ jumpId, onJumpDeleted }: JumpDetailsPanelProp
               exitOffsetSec={jump.timeSeries.exitOffsetSec}
               deploymentOffsetSec={jump.timeSeries.deploymentOffsetSec}
               landingOffsetSec={jump.timeSeries.landingOffsetSec}
+              overlays={mapOverlays}
             />
           )}
 
