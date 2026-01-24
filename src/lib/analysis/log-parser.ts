@@ -12,6 +12,8 @@ export interface GPSPoint {
   latitude: number;
   longitude: number;
   altitude: number; // Feet (barometric preferred)
+  groundspeed_kmph?: number; // Ground speed in km/h (from VTG)
+  heading_deg?: number; // Ground track heading in degrees true (from VTG)
 }
 
 export interface ParsedLogData {
@@ -123,8 +125,10 @@ export class LogParser {
             timestamp: entry.timeOffset,
             latitude: entry.location.lat_deg,
             longitude: entry.location.lon_deg,
-            altitude: entry.baroAlt_ft !== null ? entry.baroAlt_ft : 
-                     this.metersToFeet(entry.location.alt_m) // Fallback to GPS altitude if no baro
+            altitude: entry.baroAlt_ft !== null ? entry.baroAlt_ft :
+                     this.metersToFeet(entry.location.alt_m), // Fallback to GPS altitude if no baro
+            groundspeed_kmph: entry.groundspeed_kmph ?? undefined,
+            heading_deg: entry.groundtrack_degT ?? undefined
           });
         }
       }

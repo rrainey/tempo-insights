@@ -5,13 +5,14 @@ import { Card, Text, Group, Stack, Badge, Divider, Skeleton, SimpleGrid, Paper, 
 import { IconClock, IconRuler, IconMapPin, IconParachute, IconCalendar, IconEye, IconEyeOff, IconMessage2Up, IconTrash, IconAlertTriangle } from '@tabler/icons-react';
 import { JumpAltitudeChart } from './JumpAltitudeChart';
 import { VelocityBinChart } from './VelocityBinChart';
+import { GNSSPathMap } from './GNSSPathMap';
 import { notifications } from '@mantine/notifications';
-import type { TimeSeriesPoint } from '../../lib/analysis/log-parser';
+import type { TimeSeriesPoint, GPSPoint } from '../../lib/analysis/log-parser';
 
 interface JumpTimeSeries {
   altitude: TimeSeriesPoint[];
   vspeed: TimeSeriesPoint[];
-  gps: any[];
+  gps: GPSPoint[];
   duration: number;
   sampleRate: number;
   hasGPS: boolean;
@@ -525,6 +526,16 @@ export function JumpDetailsPanel({ jumpId, onJumpDeleted }: JumpDetailsPanelProp
               deploymentOffsetSec={jump.timeSeries.deploymentOffsetSec}
               landingOffsetSec={jump.timeSeries.landingOffsetSec}
               showVSpeed={false}
+            />
+          )}
+
+          {/* GNSS Path Map */}
+          {jump.timeSeries && jump.timeSeries.hasGPS && jump.timeSeries.gps.length > 0 && (
+            <GNSSPathMap
+              gpsData={jump.timeSeries.gps}
+              exitOffsetSec={jump.timeSeries.exitOffsetSec}
+              deploymentOffsetSec={jump.timeSeries.deploymentOffsetSec}
+              landingOffsetSec={jump.timeSeries.landingOffsetSec}
             />
           )}
 

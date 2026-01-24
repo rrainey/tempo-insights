@@ -1,5 +1,6 @@
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import '../styles/globals.css';
 import type { AppProps } from 'next/app';
 import { MantineProvider } from '@mantine/core';
