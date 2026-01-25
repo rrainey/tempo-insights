@@ -1,4 +1,3 @@
-import { XAxis } from 'recharts';
 import {KMLDataV1, KMLDisplayV1, GeodeticCoordinates, Vector3} from './dropkick-reader'
 import LatLon from 'geodesy/latlon-ellipsoidal-vincenty.js';
 import { traverseEllipsoid } from './rr-geodesy';
@@ -55,11 +54,11 @@ export function interp1(xarray: number[], varray: number[], x: number): number {
 }
 
 /**
- * Compute plottable values from the logged data series. 
- * 
- * @param samples 
- * @param surfacePressureAlt_mMSL 
- * @returns 
+ * Compute plottable values from the logged data series.
+ *
+ * @param samples
+ * @param surfacePressureAlt_mMSL
+ * @returns
  */
 export const plottableValuesFromSamples = (samples: KMLDataV1[], surfacePressureAlt_mMSL: number) => {
     const estimatedHAT_G_m = surfacePressureAlt_mMSL;
@@ -84,7 +83,7 @@ export const plottableValuesFromSamples = (samples: KMLDataV1[], surfacePressure
                 H_mAGL: 0,
                 accelMag_mps2: 0
             };
-            // we might have a quantization problem with 3D altitude report given 
+            // we might have a quantization problem with 3D altitude report given
             // the short time scale (4Hz) between GNSS reports (3D altitudes reported with 10cm resolution)
             next.HDot_mps = (cur.location.alt_m - lastSample.location.alt_m) / (cur.timeOffset - lastSample.timeOffset);
             next.HDot_fpm = METERStoFEET( next.HDot_mps ) * 60;
@@ -100,7 +99,7 @@ export const plottableValuesFromSamples = (samples: KMLDataV1[], surfacePressure
             //
             next.H_B_ftAGL = null;  // barometric altitude above ground level
             next.H_B_mAGL = null;   // barometric altitude above ground level
-            // if we have barometric altitude, compute H_B_ftAGL and 
+            // if we have barometric altitude, compute H_B_ftAGL and
             //
             if (next.baroAlt_ft !== null) {
                 next.H_B_ftAGL = next.baroAlt_ft - METERStoFEET(surfacePressureAlt_mMSL);
@@ -128,7 +127,7 @@ export const plottableValuesFromSamples = (samples: KMLDataV1[], surfacePressure
             }
 
             if (next.accel_mps2) {
-                next.accelMag_mps2 = Math.sqrt(next.accel_mps2.x * next.accel_mps2.x + 
+                next.accelMag_mps2 = Math.sqrt(next.accel_mps2.x * next.accel_mps2.x +
                     next.accel_mps2.y * next.accel_mps2.y + next.accel_mps2.z * next.accel_mps2.z)
             }
 

@@ -209,10 +209,15 @@ class CustomPacketFactory extends DefaultPacketFactory<CustomPackets> {
 				};
 			}
 			else if (stub.sentenceId === verSentenceId) {
+				// fields[2] is like "V1" - extract the number after the "V" prefix
+				const versionField = fields[2] || '';
+				const versionNum = versionField.startsWith('V')
+					? parseInt(versionField.substring(1), 10)
+					: parseInt(versionField, 10);
 				return {
 					...initStubFields(stub, verSentenceId),
 					versionString: fields[1],
-					versionNumber: parseInt(fields[2], 10)
+					versionNumber: versionNum
 				};
 			}
 			else if (stub.sentenceId === fixSentenceId) {
@@ -639,11 +644,11 @@ export class DropkickReader {
 		}
 		
 		/*
-		 * Generate interpolated estimates for altitude at each sample point using data from $PENV time series
-		 * Convert it from MSL to AGL using the DZ surface elevation
+		 * Generate interpolated estimates for altitude at each sample point using data from $PENV time series.
+		 * Note: envAltSeries_ft already contains AGL values (surface elevation subtracted in line 593)
 		 */
 		this.logEntries.forEach( (entry) => {
-			entry.baroAlt_ft = interp1(this.envSampleTimeSeries_ft, this.envAltSeries_ft, entry.timeOffset) - dzSurfaceElevation_ftMSL;
+			entry.baroAlt_ft = interp1(this.envSampleTimeSeries_ft, this.envAltSeries_ft, entry.timeOffset);
 		})
 	};
 

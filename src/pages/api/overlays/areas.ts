@@ -3,7 +3,7 @@
 // This is a temporary endpoint - will be replaced by dynamic overlay management
 
 import { NextApiRequest, NextApiResponse } from 'next';
-import areasData from '../../../../docs/areas.json';
+import areasData from '../../../../docs/SSD-areas.json';
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') {
