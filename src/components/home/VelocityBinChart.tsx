@@ -249,7 +249,7 @@ export function VelocityBinChart({ data, summary }: VelocityBinChartProps) {
               domain={[0, 'dataMax']}
               stroke="#c5c0c9"
               label={{
-                value: 'Time (seconds)',
+                value: 'Elapsed Time (seconds)',
                 position: 'insideBottom',
                 offset: -10,
                 style: { fill: '#c5c0c9' },

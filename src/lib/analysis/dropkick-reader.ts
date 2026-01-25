@@ -4,7 +4,7 @@ import { initStubFields, PacketStub } from "nmea-simple/dist/codecs/PacketStub";
 import { KMLWriter } from './kml-writer'
 //import { getPackedSettings } from "http2";
 import * as egm96 from 'egm96-universal'
-import { FEETtoMETERS, interp1 } from "./dropkick-tools";
+import { FEETtoMETERS, METERStoFEET, interp1 } from "./dropkick-tools";
 
 export interface GeodeticCoordinates {
 	lat_deg: number,
@@ -89,7 +89,7 @@ interface EnvironmentPacket extends PacketStub<typeof envSentenceId> {
 const envSurfaceElevationId: "_SFC" = "_SFC";
 
 interface EnvironmentSurfacePacket extends PacketStub<typeof envSurfaceElevationId> {
-	elevation_ft: number;
+	elevation_ft: number;  // estimated surface elevation (MSL) - based solely on barometric pressure
 }
 
 const imuSentenceId: "_IMU" = "_IMU";
@@ -316,7 +316,7 @@ export class DropkickReader {
 	lastEnvTimestamp_ms: number;
 	lastTimeHackTimestamp_ms: number;
 	lastTimeOffset_sec: number;			// as we process the series, this will reflect the time offset (sec) for the last entry we have processed
-	lastEnvAlt_ft: number;
+	lastEnvAlt_ft: number;				// last barometric altitude from PENV sentence (ft,MSL)
 	seq: number;
 	acc: Vector3;
 	maxAcc: Vector3;
@@ -590,7 +590,7 @@ export class DropkickReader {
 						// save (filtered) altitude samples as a time series (expressed as log start time offsets (sec)). 
 						// We will use this later generate interpolated values that will correspond to the time offsets appearing in
 						// the recorded sample series.
-						this.envAltSeries_ft.push(baroAlt_ft);
+						this.envAltSeries_ft.push(baroAlt_ft - METERStoFEET(this.dzSurfacePressureAltitude_m));
 						this.envSampleTimeSeries_ft.push(this.lastTimeOffset_sec + 
 							(packet.timestamp_ms - this.lastTimeHackTimestamp_ms + this.timeHackSerialAdjustment_ms) / 1000.0);
 						
@@ -631,28 +631,19 @@ export class DropkickReader {
 		 */
 		this.state = ReaderState.END;
 
-		/*
-
-		 * Obsolete now that we support $PSFC records
-
-		if (this.logEntries && this.logEntries.length > 0) {
-			const lastLocation = this.logEntries[this.logEntries.length-1].location;
-			if (lastLocation) {
-				this.dzSurfaceGPSAltitude_m = lastLocation.alt_m;
-			}
-		}
-		else {
-			this.dzSurfaceGPSAltitude_m = 0;
+		// Do we have a usable DZ surface elevation?
+		
+		let dzSurfaceElevation_ftMSL = 0.;
+		if (!isNaN(this.dzSurfacePressureAltitude_m)) {
+			dzSurfaceElevation_ftMSL = METERStoFEET(this.dzSurfacePressureAltitude_m);
 		}
 		
-		this.dzSurfacePressureAltitude_m = FEETtoMETERS(this.envAltSeries_ft[this.envAltSeries_ft.length-1]);
-		*/
-
 		/*
 		 * Generate interpolated estimates for altitude at each sample point using data from $PENV time series
+		 * Convert it from MSL to AGL using the DZ surface elevation
 		 */
 		this.logEntries.forEach( (entry) => {
-			entry.baroAlt_ft = interp1(this.envSampleTimeSeries_ft, this.envAltSeries_ft, entry.timeOffset);
+			entry.baroAlt_ft = interp1(this.envSampleTimeSeries_ft, this.envAltSeries_ft, entry.timeOffset) - dzSurfaceElevation_ftMSL;
 		})
 	};
 

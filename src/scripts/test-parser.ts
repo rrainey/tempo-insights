@@ -86,7 +86,7 @@ function testLogParser() {
     gpsSamples.forEach(t => {
       const gpsPoint = parsed.gps.find(p => Math.abs(p.timestamp - t) < 0.5);
       if (gpsPoint) {
-        console.log(`   ${t.toString().padStart(7)} | ${gpsPoint.latitude.toFixed(6).padStart(11)} | ${gpsPoint.longitude.toFixed(6).padStart(11)} | ${gpsPoint.altitude.toString().padStart(7)}`);
+        console.log(`   ${t.toString().padStart(7)} | ${gpsPoint.latitude.toFixed(6).padStart(11)} | ${gpsPoint.longitude.toFixed(6).padStart(11)} | ${gpsPoint.altitude_ftAGL.toString().padStart(7)}`);
       }
     });
   }

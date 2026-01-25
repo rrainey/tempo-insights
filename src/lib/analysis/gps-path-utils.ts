@@ -73,7 +73,7 @@ export function gpsToGeoJSONWithProperties(gpsData: GPSPoint[]): GeoJSONLineStri
       // Store point data as arrays for retrieval during hover
       timestamps: gpsData.map(p => p.timestamp),
       groundspeeds: gpsData.map(p => p.groundspeed_kmph ?? null),
-      altitudes: gpsData.map(p => p.altitude)
+      altitudes: gpsData.map(p => p.altitude_ftAGL)
     },
     geometry: {
       type: 'LineString',
@@ -101,8 +101,8 @@ export function gpsToPointFeatures(
         timestamp: point.timestamp,
         groundspeed_kmph: point.groundspeed_kmph ?? null,
         groundspeed_mph: point.groundspeed_kmph ? kmphToMph(point.groundspeed_kmph) : null,
-        altitude: point.altitude,
-        heading: point.heading_deg ?? null,
+        altitude: point.altitude_ftAGL,
+        heading: point.groundTrack_degT ?? null,
         phase
       },
       geometry: {
