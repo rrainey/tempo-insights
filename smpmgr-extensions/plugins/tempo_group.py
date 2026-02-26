@@ -564,24 +564,28 @@ def settings_set(
         await connect_with_spinner(smpclient, options.timeout)
         
         # Build request with only the fields that were specified
-        request = SettingsSet()
+        # SettingsSet is a frozen Pydantic model, so all fields must be
+        # provided at construction time.
+        kwargs = {}
         settings_to_change = []
-        
+
         if ble_name is not None:
-            request.ble_name = ble_name
+            kwargs["ble_name"] = ble_name
             settings_to_change.append(f"BLE Name = '{ble_name}'")
-        
+
         if pps_enabled is not None:
-            request.pps_enabled = pps_enabled
+            kwargs["pps_enabled"] = pps_enabled
             settings_to_change.append(f"PPS Enabled = {pps_enabled}")
-        
+
         if pcb_variant is not None:
-            request.pcb_variant = pcb_variant
+            kwargs["pcb_variant"] = pcb_variant
             settings_to_change.append(f"PCB Variant = 0x{pcb_variant:02X}")
-        
+
         if log_backend is not None:
-            request.log_backend = log_backend
+            kwargs["log_backend"] = log_backend
             settings_to_change.append(f"Log Backend = '{log_backend}'")
+
+        request = SettingsSet(**kwargs)
         
         console.print("Setting:", style="cyan")
         for setting in settings_to_change:

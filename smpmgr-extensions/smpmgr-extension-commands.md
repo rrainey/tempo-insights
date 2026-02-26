@@ -35,7 +35,9 @@ Device 77:FD:17:0A:DB:07 77-FD-17-0A-DB-07
 
 ## Custom Tempo commands supported by smpmgr
 
-We have developed a smpmgr custom plugin. This polugin adds several tempo-BT-specific commands to the core command set.
+We have developed a smpmgr custom plugin. This plugin adds several tempo-BT-specific commands to the core command set.
+
+On my system, I have `smpmgr` installed in `~/.local/bin/`
 
 ```
 # Get help
@@ -79,6 +81,34 @@ smpmgr --ble Tempo-BT-0004 --plugin-path=plugins tempo storage-info
 │ Free Space  │ 6.9 MB (7,192,576 bytes) │
 │ Used        │ 1%                       │
 └─────────────┴──────────────────────────┘
+```
+
+## Programming a new Tempo-BT device
+
+The Tempo-BT device stores configuration settings, including its BLE device name, in non-volatile memory.  A flashed, but otherwise uninitialized device, must have a unique BLE name assigned.  The default starting name will be "Tempo-BT".  We can use this information to program the initial settings.
+
+```
+$ ~/.local/bin/smpmgr --ble Tempo-BT --plugin-path=plugins tempo settings-set  \ 
+  --pps-enabled --pcb-variant 2 --ble-name "Tempo-BT-0005"
+
+⠧ Connecting to Tempo-BT... OK
+Setting:
+  • BLE Name = 'Tempo-BT-0005'
+  • PPS Enabled = True
+  • PCB Variant = 0x02
+
+Settings updated successfully!
+       Current Settings        
+┏━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┓
+┃ Setting     ┃ Value         ┃
+┡━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━┩
+│ BLE Name    │ Tempo-BT-0005 │
+│ PPS Enabled │ True          │
+│ PCB Variant │ 0x02          │
+│ Log Backend │ littlefs      │
+└─────────────┴───────────────┘
+
+Note: BLE name changes require reboot
 ```
 
 ## List log sessions available for download from device primary storage
