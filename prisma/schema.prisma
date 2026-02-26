@@ -349,7 +349,7 @@ model MapOverlay {
   id          String   @id @default(cuid())
   name        String
   description String?
-  storagePath String   // Path in Supabase Storage bucket "map-overlays"
+  storagePath String   @unique // Path in Supabase Storage bucket "map-overlays"
 
   // Bounding box for spatial queries (WGS84)
   minLon      Float    // Minimum longitude
